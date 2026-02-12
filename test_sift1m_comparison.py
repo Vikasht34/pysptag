@@ -1,6 +1,8 @@
 """
 SIFT1M Comparison: SPANN with vs without RaBitQ
 Apple-to-apple comparison on full 1M dataset
+Usage: python test_sift1m_comparison.py [bits]
+  bits: 1, 2, or 4 (default: 4)
 """
 import numpy as np
 import struct
@@ -10,6 +12,10 @@ import os
 sys.path.insert(0, os.path.expanduser('~/pysptag'))
 
 from src.index.spann_rabitq_replica import SPANNRaBitQReplica
+
+# Get bits from command line
+bq = int(sys.argv[1]) if len(sys.argv) > 1 else 4
+print(f"Using {bq}-bit quantization")
 
 def read_fvecs(filename, max_vecs=None):
     vectors = []
@@ -96,6 +102,7 @@ index2 = SPANNRaBitQReplica(
     dim=128,
     target_posting_size=5000,
     replica_count=6,  # Match TEST 1
+    bq=bq,  # Use command line argument
     use_rabitq=True
 )
 index2.build(base)
