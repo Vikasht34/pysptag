@@ -54,7 +54,7 @@ print("TEST 1: SPANN (No Quantization)")
 print("="*80)
 
 t0 = time.time()
-index1 = SPANN(dim=128, target_posting_size=5000)  # Larger posting size for 1M
+index1 = SPANN(dim=128, target_posting_size=5000, replication_factor=2)
 index1.build(base)
 build_time1 = time.time() - t0
 print(f"Build time: {build_time1:.2f}s")

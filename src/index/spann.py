@@ -20,12 +20,12 @@ class SPANN:
         self,
         dim: int,
         target_posting_size: int = 10000,  # Paper: S (target posting size)
-        closure_factor: float = 1.5,        # Paper: τ (closure threshold)
+        replication_factor: int = 2,        # Number of nearest centroids to replicate to
         balance_lambda: float = None,       # Paper: λ (balance penalty)
     ):
         self.dim = dim
         self.target_posting_size = target_posting_size
-        self.closure_factor = closure_factor
+        self.replication_factor = replication_factor
         self.balance_lambda = balance_lambda
         
         self.centroids = None
@@ -117,15 +117,8 @@ class SPANN:
         """
         Section 3.2.2: Posting List Augmentation
         
-        Algorithm (from paper):
-        1. For each vector v, find nearest centroid c*
-        2. Compute d* = distance(v, c*)
-        3. Add v to ALL postings where distance(v, c_i) ≤ τ × d*
-        
-        This creates the "closure" of clusters - boundary vectors
-        appear in multiple postings.
-        
-        τ (closure_factor): typically 1.2 - 2.0
+        Strategy: Fixed replication - add each vector to k nearest centroids
+        This gives predictable replication factor and better performance.
         """
         n = len(vectors)
         k = len(self.centroids)
@@ -133,7 +126,6 @@ class SPANN:
         
         # Process in batches for memory efficiency
         batch_size = 1000
-        replication_counts = []
         
         for start in range(0, n, batch_size):
             end = min(start + batch_size, n)
@@ -142,25 +134,15 @@ class SPANN:
             # Compute distances to all centroids
             dists = np.sum((batch[:, None, :] - self.centroids[None, :, :])**2, axis=2)
             
+            # For each vector, find k nearest centroids
+            nearest_k = np.argpartition(dists, min(self.replication_factor, k-1), axis=1)[:, :self.replication_factor]
+            
             for i in range(len(batch)):
                 global_i = start + i
-                
-                # Find nearest centroid distance (d*)
-                nearest_dist = dists[i].min()
-                
-                # Threshold: τ × d*
-                threshold = self.closure_factor * nearest_dist
-                
-                # Add to ALL postings within threshold
-                close_centroids = np.where(dists[i] <= threshold)[0]
-                
-                for c in close_centroids:
+                for c in nearest_k[i]:
                     postings[int(c)].append(global_i)
-                
-                replication_counts.append(len(close_centroids))
         
-        print(f"  Replication: min={min(replication_counts)}, max={max(replication_counts)}, "
-              f"avg={np.mean(replication_counts):.2f}")
+        print(f"  Replication: {self.replication_factor}x (fixed)")
         
         return dict(postings)
     
