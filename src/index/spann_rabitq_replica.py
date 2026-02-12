@@ -174,7 +174,6 @@ class SPANNRaBitQReplica:
         
         # Search postings with deduplication
         seen = set()
-        all_dists = []
         all_indices = []
         
         for centroid_id in nearest_centroids:
@@ -189,31 +188,32 @@ class SPANNRaBitQReplica:
             search_k = min(max_check, len(posting_ids))
             
             if self.use_rabitq:
-                # Use RaBitQ distance estimation (no need to fetch original vectors)
-                dists, local_indices = rabitq.search(query, codes, None, k=search_k)
+                # Use RaBitQ for fast filtering (distances not comparable across postings)
+                _, local_indices = rabitq.search(query, codes, None, k=search_k)
             else:
                 # Direct distance computation (codes = original vectors)
                 dists = np.sum((codes - query) ** 2, axis=1)
                 local_indices = np.argsort(dists)[:search_k]
-                dists = dists[local_indices]
             
             # Map to global IDs and deduplicate
-            for dist, local_idx in zip(dists, local_indices):
+            for local_idx in local_indices:
                 global_id = posting_ids[local_idx]
                 if global_id not in seen:
                     seen.add(global_id)
-                    all_dists.append(dist)
                     all_indices.append(global_id)
                     
-                    if len(all_dists) >= max_check:
+                    if len(all_indices) >= max_check:
                         break
             
-            if len(all_dists) >= max_check:
+            if len(all_indices) >= max_check:
                 break
         
-        # Get top-k
-        if len(all_dists) == 0:
+        # Rerank with true distances
+        if len(all_indices) == 0:
             return np.array([]), np.array([])
         
-        top_k_idx = np.argsort(all_dists)[:k]
-        return np.array(all_dists)[top_k_idx], np.array(all_indices)[top_k_idx]
+        all_indices = np.array(all_indices)
+        true_dists = np.sum((data[all_indices] - query) ** 2, axis=1)
+        top_k_idx = np.argsort(true_dists)[:k]
+        
+        return true_dists[top_k_idx], all_indices[top_k_idx]
