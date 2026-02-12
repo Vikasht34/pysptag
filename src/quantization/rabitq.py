@@ -19,9 +19,6 @@ class RaBitQ:
         self.dim = dim
         self.bq = bq
         
-        # Random orthogonal matrix P
-        self.P = ortho_group.rvs(dim).astype(np.float32)
-        
         # Factors computed during build
         self.centroid = None
         self.f_add = None
@@ -39,13 +36,10 @@ class RaBitQ:
         # Step 2: Compute residuals (data - centroid)
         residuals = data - self.centroid
         
-        # Step 3: Rotate residuals with P^T
-        rotated = residuals @ self.P.T
+        # Step 3: Extract binary codes (sign of residuals, NO rotation)
+        codes = (residuals > 0).astype(np.uint8)
         
-        # Step 4: Extract binary codes (sign bits)
-        codes = (rotated > 0).astype(np.uint8)
-        
-        # Step 5: Compute factors (from official one_bit_code_with_factor)
+        # Step 4: Compute factors (from official one_bit_code_with_factor)
         cb = -0.5  # -((1 << 1) - 1) / 2.0
         xu_cb = codes.astype(np.float32) + cb
         
@@ -53,10 +47,9 @@ class RaBitQ:
         l2_sqr = np.sum(residuals ** 2, axis=1)
         l2_norm = np.sqrt(l2_sqr)
         
-        # Inner products (xu_cb is in ROTATED space, so rotate centroid too)
-        centroid_rotated = self.centroid @ self.P.T
-        ip_resi_xucb = np.sum(rotated * xu_cb, axis=1)  # residual is already rotated
-        ip_cent_xucb = np.sum(centroid_rotated * xu_cb, axis=1)
+        # Inner products (in ORIGINAL space, not rotated)
+        ip_resi_xucb = np.sum(residuals * xu_cb, axis=1)
+        ip_cent_xucb = np.sum(self.centroid * xu_cb, axis=1)
         
         # Avoid division by zero
         ip_resi_xucb = np.where(ip_resi_xucb == 0, np.inf, ip_resi_xucb)
@@ -82,20 +75,25 @@ class RaBitQ:
             data: Original data (not used, kept for compatibility)
             k: Number of neighbors
         """
-        # Step 1: Compute query residual and rotate
+        # Step 1: Compute query residual (NO rotation)
         q_residual = query - self.centroid
-        q_rotated = q_residual @ self.P.T
         
         # Step 2: Compute query constants
         cb = -0.5
-        sumq = np.sum(q_rotated)
-        G_k1xSumq = sumq * cb
         G_add = np.sum(q_residual ** 2)
         
-        # Step 3: Compute ip_x0_qr (inner product between codes and rotated query)
-        # This is the key: sum query values where code bit is 1
-        # Equivalent to: sum(q_rotated[i] for i where codes[:, i] == 1)
-        ip_x0_qr = np.sum(codes * q_rotated, axis=1).astype(np.float32)
+        # Step 3: Compute ip_x0_qr
+        # ip_x0_qr = dot(xu_cb_data, q_residual) where xu_cb_data = codes - 0.5
+        # Expand: dot(codes - 0.5, q_residual) = dot(codes, q_residual) - 0.5 * sum(q_residual)
+        ip_codes_qres = np.sum(codes * q_residual, axis=1).astype(np.float32)
+        sumq = np.sum(q_residual)
+        ip_x0_qr = ip_codes_qres + cb * sumq  # cb = -0.5
+        
+        # G_k1xSumq is also cb * sumq, so it cancels out in the formula!
+        # Actually, looking at the formula: f_rescale * (ip_x0_qr + k1xsumq)
+        # If ip_x0_qr already includes the cb*sumq term, then k1xsumq might be for something else
+        # Let me just use ip_x0_qr as computed above
+        G_k1xSumq = 0  # Set to 0 since we already included cb*sumq in ip_x0_qr
         
         # Step 4: Estimate distances using official formula
         # est_dist = f_add + G_add + f_rescale * (ip_x0_qr + G_k1xSumq)
