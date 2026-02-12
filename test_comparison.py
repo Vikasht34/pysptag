@@ -1,4 +1,4 @@
-"""Compare SPANN with and without RaBitQ on 10K vectors"""
+"""Compare SPANN with and without RaBitQ on SIFT1M"""
 import numpy as np
 import struct
 import time
@@ -6,7 +6,6 @@ import sys
 import os
 sys.path.insert(0, os.path.expanduser('~/pysptag'))
 
-from src.index.spann import SPANN
 from src.index.spann_rabitq_replica import SPANNRaBitQReplica
 
 def read_fvecs(filename, max_vecs=None):
@@ -48,13 +47,19 @@ queries = read_fvecs(f'{data_dir}/sift_query.fvecs', max_vecs=100)
 groundtruth = read_ivecs(f'{data_dir}/sift_groundtruth.ivecs')[:100]
 print(f"✓ Base: {base.shape}, Queries: {queries.shape}")
 
-# Test 1: SPANN without RaBitQ
+# Test 1: SPANN without RaBitQ (same structure, no quantization)
 print("\n" + "="*80)
 print("TEST 1: SPANN (No Quantization)")
 print("="*80)
 
 t0 = time.time()
-index1 = SPANN(dim=128, target_posting_size=5000, replication_factor=2)
+index1 = SPANNRaBitQReplica(
+    dim=128,
+    target_posting_size=5000,
+    replica_count=2,
+    bq=4,
+    use_rabitq=False  # Disable RaBitQ
+)
 index1.build(base)
 build_time1 = time.time() - t0
 print(f"Build time: {build_time1:.2f}s")
@@ -62,7 +67,10 @@ print(f"Build time: {build_time1:.2f}s")
 t0 = time.time()
 recalls1 = []
 for query in queries:
-    dists, indices = index1.search(query, k=10, n_probe=20)
+    dists, indices = index1.search(query, base, k=10, search_internal_result_num=64, max_check=2000)
+    if len(indices) == 0:
+        recalls1.append(0)
+        continue
     gt = set(groundtruth[len(recalls1)][:10])
     found = set(indices[:10])
     recalls1.append(len(gt & found) / 10)
@@ -71,7 +79,7 @@ search_time1 = time.time() - t0
 print(f"Search time: {search_time1:.2f}s, QPS: {len(queries)/search_time1:.1f}")
 print(f"Recall@10: {np.mean(recalls1):.2%}")
 
-# Test 2: SPANN with RaBitQ
+# Test 2: SPANN with RaBitQ (same structure, with quantization)
 print("\n" + "="*80)
 print("TEST 2: SPANN + RaBitQ")
 print("="*80)
@@ -79,9 +87,10 @@ print("="*80)
 t0 = time.time()
 index2 = SPANNRaBitQReplica(
     dim=128,
-    target_posting_size=5000,  # Match SPANN settings
-    replica_count=2,  # Paper recommendation: 2x replication
-    bq=4
+    target_posting_size=5000,
+    replica_count=2,
+    bq=4,
+    use_rabitq=True  # Enable RaBitQ
 )
 index2.build(base)
 build_time2 = time.time() - t0
