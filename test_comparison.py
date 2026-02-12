@@ -36,14 +36,14 @@ def read_ivecs(filename):
     return np.array(vectors, dtype=np.int32)
 
 print("="*80)
-print("SPANN Comparison: With vs Without RaBitQ (10K vectors)")
+print("SPANN Comparison: With vs Without RaBitQ (SIFT1M)")
 print("="*80)
 
 data_dir = os.path.expanduser('~/pysptag/data/sift')
 
 # Load data
-print("\nLoading 10K vectors...")
-base = read_fvecs(f'{data_dir}/sift_base.fvecs', max_vecs=10000)
+print("\nLoading SIFT1M dataset...")
+base = read_fvecs(f'{data_dir}/sift_base.fvecs')  # Full 1M
 queries = read_fvecs(f'{data_dir}/sift_query.fvecs', max_vecs=100)
 groundtruth = read_ivecs(f'{data_dir}/sift_groundtruth.ivecs')[:100]
 print(f"✓ Base: {base.shape}, Queries: {queries.shape}")
@@ -54,7 +54,7 @@ print("TEST 1: SPANN (No Quantization)")
 print("="*80)
 
 t0 = time.time()
-index1 = SPANN(dim=128, target_posting_size=1000)
+index1 = SPANN(dim=128, target_posting_size=5000)  # Larger posting size for 1M
 index1.build(base)
 build_time1 = time.time() - t0
 print(f"Build time: {build_time1:.2f}s")
@@ -79,8 +79,8 @@ print("="*80)
 t0 = time.time()
 index2 = SPANNRaBitQReplica(
     dim=128,
-    target_posting_size=1000,
-    replica_count=8,
+    target_posting_size=5000,  # Match SPANN settings
+    replica_count=2,  # Paper recommendation: 2x replication
     bq=4
 )
 index2.build(base)
@@ -90,7 +90,7 @@ print(f"Build time: {build_time2:.2f}s")
 t0 = time.time()
 recalls2 = []
 for query in queries:
-    dists, indices = index2.search(query, base, k=10, search_internal_result_num=64, max_check=1000)
+    dists, indices = index2.search(query, base, k=10, search_internal_result_num=64, max_check=2000)  # Paper: 2000
     if len(indices) == 0:
         recalls2.append(0)
         continue
