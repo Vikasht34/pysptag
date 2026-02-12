@@ -14,40 +14,59 @@ class RaBitQ:
         """
         Args:
             dim: Vector dimensionality
-            bq: Query quantization bits (not used in 1-bit version)
+            bq: Bits per dimension (1, 2, 4, or 8)
         """
         self.dim = dim
         self.bq = bq
+        self.n_levels = 2 ** bq  # Number of quantization levels
         
         # Factors computed during build
         self.centroid = None
         self.f_add = None
         self.f_rescale = None
         self.f_error = None
+        self.scale = None  # Quantization scale for multi-bit
         
     def build(self, data: np.ndarray):
-        """Build index - matches official implementation exactly"""
+        """Build index with multi-bit quantization"""
         n, dim = data.shape
         assert dim == self.dim
         
         # Step 1: Compute centroid
         self.centroid = np.mean(data, axis=0).astype(np.float32)
         
-        # Step 2: Compute residuals (data - centroid)
+        # Step 2: Compute residuals
         residuals = data - self.centroid
         
-        # Step 3: Extract binary codes (sign of residuals, NO rotation)
-        codes = (residuals > 0).astype(np.uint8)
+        # Step 3: Quantize residuals
+        if self.bq == 1:
+            # 1-bit: just sign
+            codes = (residuals > 0).astype(np.uint8)
+            cb = -0.5
+        else:
+            # Multi-bit: uniform quantization
+            # Find min/max for scaling
+            res_min = residuals.min()
+            res_max = residuals.max()
+            self.scale = (res_max - res_min) / (self.n_levels - 1)
+            
+            # Quantize to [0, n_levels-1]
+            codes = np.clip(
+                np.round((residuals - res_min) / self.scale),
+                0, self.n_levels - 1
+            ).astype(np.uint8)
+            
+            # Center: cb shifts codes to be centered around 0
+            cb = -(self.n_levels - 1) / 2.0
         
-        # Step 4: Compute factors (from official one_bit_code_with_factor)
-        cb = -0.5  # -((1 << 1) - 1) / 2.0
+        # Step 4: Compute xu_cb and factors
         xu_cb = codes.astype(np.float32) + cb
         
         # Norms
         l2_sqr = np.sum(residuals ** 2, axis=1)
         l2_norm = np.sqrt(l2_sqr)
         
-        # Inner products (in ORIGINAL space, not rotated)
+        # Inner products
         ip_resi_xucb = np.sum(residuals * xu_cb, axis=1)
         ip_cent_xucb = np.sum(self.centroid * xu_cb, axis=1)
         
@@ -67,47 +86,33 @@ class RaBitQ:
         return codes
     
     def search(self, query: np.ndarray, codes: np.ndarray, data: np.ndarray, k: int = 10):
-        """Search - matches official estimator formula
-        
-        Args:
-            query: Query vector
-            codes: Binary codes
-            data: Original data (not used, kept for compatibility)
-            k: Number of neighbors
-        """
-        # Step 1: Compute query residual (NO rotation)
+        """Search with multi-bit quantization support"""
+        # Step 1: Compute query residual
         q_residual = query - self.centroid
         
-        # Step 2: Compute query constants
-        cb = -0.5
-        G_add = np.sum(q_residual ** 2)
+        # Step 2: Compute cb based on bits
+        if self.bq == 1:
+            cb = -0.5
+        else:
+            cb = -(self.n_levels - 1) / 2.0
         
         # Step 3: Compute ip_x0_qr
-        # ip_x0_qr = dot(xu_cb_data, q_residual) where xu_cb_data = codes - 0.5
-        # Expand: dot(codes - 0.5, q_residual) = dot(codes, q_residual) - 0.5 * sum(q_residual)
         ip_codes_qres = np.sum(codes * q_residual, axis=1).astype(np.float32)
         sumq = np.sum(q_residual)
-        ip_x0_qr = ip_codes_qres + cb * sumq  # cb = -0.5
+        ip_x0_qr = ip_codes_qres + cb * sumq
         
-        # G_k1xSumq is also cb * sumq, so it cancels out in the formula!
-        # Actually, looking at the formula: f_rescale * (ip_x0_qr + k1xsumq)
-        # If ip_x0_qr already includes the cb*sumq term, then k1xsumq might be for something else
-        # Let me just use ip_x0_qr as computed above
-        G_k1xSumq = 0  # Set to 0 since we already included cb*sumq in ip_x0_qr
+        # Step 4: Compute G_add
+        G_add = np.sum(q_residual ** 2)
         
-        # Step 4: Estimate distances using official formula
-        # est_dist = f_add + G_add + f_rescale * (ip_x0_qr + G_k1xSumq)
-        estimated_dist = self.f_add + G_add + self.f_rescale * (ip_x0_qr + G_k1xSumq)
-        
-        # Ensure non-negative
+        # Step 5: Estimate distances
+        estimated_dist = self.f_add + G_add + self.f_rescale * ip_x0_qr
         estimated_dist = np.maximum(estimated_dist, 0)
         
-        # Step 5: Get top-k
+        # Step 6: Get top-k
         k = min(k, len(estimated_dist))
         if k == 0:
             return np.array([]), np.array([])
         
-        # Use argsort if k is close to array size (argpartition fails)
         if k >= len(estimated_dist) - 1:
             indices = np.argsort(estimated_dist)[:k]
         else:
