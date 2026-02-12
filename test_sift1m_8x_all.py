@@ -107,7 +107,8 @@ for config in configs:
         'p50': np.percentile(latencies, 50),
         'p90': np.percentile(latencies, 90),
         'p99': np.percentile(latencies, 99),
-        'recall': np.mean(recalls)
+        'recall': np.mean(recalls),
+        'index': index  # Keep reference for memory analysis
     })
 
 # Summary table
@@ -120,11 +121,39 @@ for r in results:
     print(f"{r['name']:<15} {r['build_time']:<10.2f} {r['search_time']:<10.2f} {r['qps']:<8.1f} {r['p50']:<8.2f} {r['p90']:<8.2f} {r['p99']:<8.2f} {r['recall']:.2%}")
 print("="*80)
 
-# Memory comparison
-print("\nMemory Usage (estimated):")
-print(f"  No RaBitQ:    {8 * 1000000 * 128 * 4 / 1024 / 1024:.0f} MB")
-print(f"  With RaBitQ:  {8 * 1000000 * 128 * 1 / 1024 / 1024:.0f} MB (75% savings)")
-print()
+# Memory breakdown
+print("\n" + "="*80)
+print("MEMORY BREAKDOWN")
+print("="*80)
+
+for r in results:
+    idx = r['index']
+    
+    # Posting lists memory
+    posting_mem = 0
+    for codes in idx.posting_codes:
+        posting_mem += codes.nbytes
+    
+    # Centroids memory
+    centroid_mem = idx.centroids.nbytes if idx.centroids is not None else 0
+    
+    # BKTree memory (approximate)
+    bktree_mem = centroid_mem * 2  # Rough estimate: centroids + tree structure
+    
+    # RNG graph memory (approximate)
+    rng_mem = centroid_mem  # Rough estimate: similar to centroids
+    
+    total_mem = posting_mem + centroid_mem + bktree_mem + rng_mem
+    
+    print(f"\n{r['name']}:")
+    print(f"  Posting lists:  {posting_mem / 1024 / 1024:>8.1f} MB")
+    print(f"  Centroids:      {centroid_mem / 1024 / 1024:>8.1f} MB")
+    print(f"  BKTree:         {bktree_mem / 1024 / 1024:>8.1f} MB (estimated)")
+    print(f"  RNG Graph:      {rng_mem / 1024 / 1024:>8.1f} MB (estimated)")
+    print(f"  {'─'*40}")
+    print(f"  Total:          {total_mem / 1024 / 1024:>8.1f} MB")
+
+print("\n" + "="*80)
 print("Recommendation:")
 print("  1-bit: Fastest, good recall - use for very large scale")
 print("  2-bit: Balanced - good middle ground")
