@@ -69,7 +69,7 @@ print(f"Build time: {build_time1:.2f}s")
 t0 = time.time()
 recalls1 = []
 for query in queries:
-    dists, indices = index1.search(query, base, k=10, search_internal_result_num=64, max_check=2000)
+    dists, indices = index1.search(query, base, k=10, search_internal_result_num=128, max_check=4000)
     if len(indices) == 0:
         recalls1.append(0)
         continue
@@ -100,7 +100,7 @@ print(f"Build time: {build_time2:.2f}s")
 t0 = time.time()
 recalls2 = []
 for query in queries:
-    dists, indices = index2.search(query, base, k=10, search_internal_result_num=64, max_check=2000)
+    dists, indices = index2.search(query, base, k=10, search_internal_result_num=128, max_check=4000)
     if len(indices) == 0:
         recalls2.append(0)
         continue
