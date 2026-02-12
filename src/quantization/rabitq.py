@@ -106,7 +106,14 @@ class RaBitQ:
         
         # Step 5: Get top-k
         k = min(k, len(estimated_dist))
-        indices = np.argpartition(estimated_dist, k)[:k]
-        indices = indices[np.argsort(estimated_dist[indices])]
+        if k == 0:
+            return np.array([]), np.array([])
+        
+        # Use argsort if k is close to array size (argpartition fails)
+        if k >= len(estimated_dist) - 1:
+            indices = np.argsort(estimated_dist)[:k]
+        else:
+            indices = np.argpartition(estimated_dist, k)[:k]
+            indices = indices[np.argsort(estimated_dist[indices])]
         
         return estimated_dist[indices], indices

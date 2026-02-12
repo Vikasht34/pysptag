@@ -59,7 +59,7 @@ t0 = time.time()
 index1 = SPANNRaBitQReplica(
     dim=128,
     target_posting_size=5000,
-    replica_count=2,
+    replica_count=4,  # Increase from 2 to 4 for better recall
     use_rabitq=False
 )
 index1.build(base)
@@ -90,7 +90,7 @@ t0 = time.time()
 index2 = SPANNRaBitQReplica(
     dim=128,
     target_posting_size=5000,
-    replica_count=2,
+    replica_count=4,  # Match TEST 1
     use_rabitq=True
 )
 index2.build(base)
