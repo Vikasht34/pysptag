@@ -158,7 +158,9 @@ class SPANNRaBitQReplica:
             rabitq = self.posting_rabitqs[centroid_id]
             posting_vecs = data[posting_ids]
             
-            dists, local_indices = rabitq.search(query, codes, posting_vecs, k=max_check)
+            # Limit k to posting size
+            search_k = min(max_check, len(posting_ids))
+            dists, local_indices = rabitq.search(query, codes, posting_vecs, k=search_k)
             
             # Map to global IDs and deduplicate
             for dist, local_idx in zip(dists, local_indices):
