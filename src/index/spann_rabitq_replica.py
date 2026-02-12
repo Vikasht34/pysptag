@@ -114,34 +114,49 @@ class SPANNRaBitQReplica:
         msg = "quantization" if self.use_rabitq else "no quantization"
         print(f"✓ Index built with {self.replica_count}× replication + {msg}")
     
-    def _balanced_kmeans(self, data: np.ndarray, k: int, max_iter: int = 100):
+    def _balanced_kmeans(self, data: np.ndarray, k: int, max_iter: int = 50):
+        """Fast vectorized balanced k-means"""
         n = len(data)
         center_idx = np.random.choice(n, k, replace=False)
         centers = data[center_idx].copy()
         lambda_penalty = 1.0 / n
         
-        for _ in range(max_iter):
-            counts = np.zeros(k, dtype=np.int32)
+        for iteration in range(max_iter):
+            # Vectorized distance computation (batch processing)
+            batch_size = 10000
             labels = np.zeros(n, dtype=np.int32)
+            counts = np.zeros(k, dtype=np.int32)
             
-            for i in range(n):
-                dists = np.sum((data[i] - centers) ** 2, axis=1)
-                dists += lambda_penalty * counts
-                labels[i] = np.argmin(dists)
-                counts[labels[i]] += 1
+            for start in range(0, n, batch_size):
+                end = min(start + batch_size, n)
+                batch = data[start:end]
+                
+                # Compute distances for batch: (batch_size, k)
+                dists = np.sum((batch[:, None, :] - centers[None, :, :]) ** 2, axis=2)
+                dists += lambda_penalty * counts[None, :]
+                
+                batch_labels = np.argmin(dists, axis=1)
+                labels[start:end] = batch_labels
+                
+                # Update counts
+                for label in batch_labels:
+                    counts[label] += 1
             
+            # Recompute centers
             new_centers = np.zeros_like(centers)
-            new_counts = np.zeros(k, dtype=np.int32)
-            
-            for i in range(n):
-                new_centers[labels[i]] += data[i]
-                new_counts[labels[i]] += 1
-            
             for j in range(k):
-                if new_counts[j] > 0:
-                    new_centers[j] /= new_counts[j]
+                mask = labels == j
+                if mask.sum() > 0:
+                    new_centers[j] = data[mask].mean(axis=0)
                 else:
                     new_centers[j] = centers[j]
+            
+            # Check convergence
+            diff = np.sum((new_centers - centers) ** 2)
+            centers = new_centers
+            if diff < 1e-3:
+                print(f"  Converged at iteration {iteration+1}")
+                break
             
             diff = np.sum((new_centers - centers) ** 2)
             centers = new_centers
