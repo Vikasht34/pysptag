@@ -44,14 +44,16 @@ class RaBitQ:
             codes = (residuals > 0).astype(np.uint8)
             cb = -0.5
             self.res_min = None
+            self.scale = None
         else:
-            # Multi-bit: uniform quantization per dimension
-            # Find min/max per dimension for better quantization
-            res_min = residuals.min(axis=0, keepdims=True)
-            res_max = residuals.max(axis=0, keepdims=True)
+            # Multi-bit: uniform quantization (global min/max)
+            # Use global quantization for compatibility with distance formula
+            res_min = residuals.min()
+            res_max = residuals.max()
             self.res_min = res_min
             self.scale = (res_max - res_min) / (self.n_levels - 1)
-            self.scale = np.where(self.scale == 0, 1, self.scale)  # Avoid division by zero
+            if self.scale == 0:
+                self.scale = 1
             
             # Quantize to [0, n_levels-1]
             codes = np.clip(

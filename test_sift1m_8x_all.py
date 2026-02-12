@@ -38,7 +38,7 @@ def read_ivecs(filename):
     return np.array(vectors, dtype=np.int32)
 
 print("="*80)
-print("SIFT1M: Complete Comparison (No RaBitQ + 1-bit + 2-bit + 4-bit)")
+print("SIFT1M: Comparison (No RaBitQ + 1-bit + 4-bit)")
 print("Configuration: 8× replication, 200 clusters")
 print("="*80)
 
@@ -55,7 +55,6 @@ print(f"✓ Base: {base.shape}, Queries: {queries.shape}")
 configs = [
     {'name': 'No RaBitQ', 'use_rabitq': False, 'bq': 4},
     {'name': '1-bit RaBitQ', 'use_rabitq': True, 'bq': 1},
-    {'name': '2-bit RaBitQ', 'use_rabitq': True, 'bq': 2},
     {'name': '4-bit RaBitQ', 'use_rabitq': True, 'bq': 4},
 ]
 
@@ -155,7 +154,7 @@ for r in results:
 
 print("\n" + "="*80)
 print("Recommendation:")
-print("  1-bit: Fastest, good recall - use for very large scale")
-print("  2-bit: Balanced - good middle ground")
-print("  4-bit: Best recall - recommended for production")
+print("  1-bit: Best speed/memory, good recall (78%) - use for very large scale")
+print("  4-bit: Best recall (90%+), still fast - recommended for production")
+print("  Note: 2-bit skipped (poor recall with RaBitQ distance formula)")
 print("="*80)
