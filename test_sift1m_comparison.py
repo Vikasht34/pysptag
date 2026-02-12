@@ -68,8 +68,12 @@ print(f"Build time: {build_time1:.2f}s")
 
 t0 = time.time()
 recalls1 = []
+latencies1 = []
 for query in queries:
+    q_start = time.time()
     dists, indices = index1.search(query, base, k=10, search_internal_result_num=128, max_check=4000)
+    latencies1.append((time.time() - q_start) * 1000)  # Convert to ms
+    
     if len(indices) == 0:
         recalls1.append(0)
         continue
@@ -79,6 +83,7 @@ for query in queries:
 
 search_time1 = time.time() - t0
 print(f"Search time: {search_time1:.2f}s, QPS: {len(queries)/search_time1:.1f}")
+print(f"Latency: p50={np.percentile(latencies1, 50):.2f}ms, p90={np.percentile(latencies1, 90):.2f}ms, p99={np.percentile(latencies1, 99):.2f}ms")
 print(f"Recall@10: {np.mean(recalls1):.2%}")
 
 # Test 2: With RaBitQ
@@ -99,8 +104,12 @@ print(f"Build time: {build_time2:.2f}s")
 
 t0 = time.time()
 recalls2 = []
+latencies2 = []
 for query in queries:
+    q_start = time.time()
     dists, indices = index2.search(query, base, k=10, search_internal_result_num=128, max_check=4000)
+    latencies2.append((time.time() - q_start) * 1000)  # Convert to ms
+    
     if len(indices) == 0:
         recalls2.append(0)
         continue
@@ -110,6 +119,7 @@ for query in queries:
 
 search_time2 = time.time() - t0
 print(f"Search time: {search_time2:.2f}s, QPS: {len(queries)/search_time2:.1f}")
+print(f"Latency: p50={np.percentile(latencies2, 50):.2f}ms, p90={np.percentile(latencies2, 90):.2f}ms, p99={np.percentile(latencies2, 99):.2f}ms")
 print(f"Recall@10: {np.mean(recalls2):.2%}")
 
 # Summary
@@ -121,5 +131,8 @@ print("-"*80)
 print(f"{'Build Time (s)':<20} {build_time1:<15.2f} {build_time2:<15.2f} {build_time2-build_time1:+.2f}s")
 print(f"{'Search Time (s)':<20} {search_time1:<15.2f} {search_time2:<15.2f} {search_time2-search_time1:+.2f}s")
 print(f"{'QPS':<20} {len(queries)/search_time1:<15.1f} {len(queries)/search_time2:<15.1f} {len(queries)/search_time2-len(queries)/search_time1:+.1f}")
+print(f"{'Latency p50 (ms)':<20} {np.percentile(latencies1, 50):<15.2f} {np.percentile(latencies2, 50):<15.2f} {np.percentile(latencies2, 50)-np.percentile(latencies1, 50):+.2f}ms")
+print(f"{'Latency p90 (ms)':<20} {np.percentile(latencies1, 90):<15.2f} {np.percentile(latencies2, 90):<15.2f} {np.percentile(latencies2, 90)-np.percentile(latencies1, 90):+.2f}ms")
+print(f"{'Latency p99 (ms)':<20} {np.percentile(latencies1, 99):<15.2f} {np.percentile(latencies2, 99):<15.2f} {np.percentile(latencies2, 99)-np.percentile(latencies1, 99):+.2f}ms")
 print(f"{'Recall@10':<20} {np.mean(recalls1):<15.2%} {np.mean(recalls2):<15.2%} {np.mean(recalls2)-np.mean(recalls1):+.2%}")
 print("="*80)
