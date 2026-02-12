@@ -8,3 +8,12 @@ build/
 *.so
 *.dylib
 .DS_Store
+
+# Data files
+data/
+*.fvecs
+*.ivecs
+*.bvecs
+*.hdf5
+*.tar.gz
+*.zip
