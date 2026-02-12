@@ -19,11 +19,13 @@ class SPANNRaBitQReplica:
         replica_count: int = 8,  # C++ default
         num_trees: int = 1,
         kmeans_k: int = 32,
-        bq: int = 4
+        bq: int = 4,
+        use_rabitq: bool = True  # Enable/disable RaBitQ quantization
     ):
         self.dim = dim
         self.target_posting_size = target_posting_size
         self.replica_count = replica_count
+        self.use_rabitq = use_rabitq
         self.bktree = BKTree(num_trees=num_trees, kmeans_k=kmeans_k)
         self.rng = RNG(neighborhood_size=32)
         self.bq = bq
@@ -62,8 +64,8 @@ class SPANNRaBitQReplica:
         print(f"  Total assignments: {sum(len(p) for p in self.posting_lists):,}")
         print(f"  Avg replicas per vector: {sum(len(p) for p in self.posting_lists) / n:.1f}")
         
-        # Step 3: Quantize each posting list
-        print(f"[3/5] Quantizing posting lists with RaBitQ...")
+        # Step 3: Quantize each posting list (if enabled)
+        print(f"[3/5] {'Quantizing' if self.use_rabitq else 'Storing'} posting lists...")
         self.posting_codes = []
         self.posting_rabitqs = []
         
@@ -79,26 +81,38 @@ class SPANNRaBitQReplica:
                 
             posting_vecs = data[posting_ids]
             
-            # Quantize this posting
-            rabitq = RaBitQ(dim=self.dim, bq=self.bq)
-            codes = rabitq.build(posting_vecs)
-            
-            self.posting_rabitqs.append(rabitq)
-            self.posting_codes.append(codes)
-            
-            total_original += posting_vecs.nbytes
-            total_compressed += codes.nbytes
+            if self.use_rabitq:
+                # Quantize this posting
+                rabitq = RaBitQ(dim=self.dim, bq=self.bq)
+                codes = rabitq.build(posting_vecs)
+                
+                self.posting_rabitqs.append(rabitq)
+                self.posting_codes.append(codes)
+                
+                total_original += posting_vecs.nbytes
+                total_compressed += codes.nbytes
+            else:
+                # Store original vectors (no quantization)
+                self.posting_rabitqs.append(None)
+                self.posting_codes.append(posting_vecs)
+                
+                total_original += posting_vecs.nbytes
+                total_compressed += posting_vecs.nbytes
         
-        print(f"  Original: {total_original / 1024 / 1024:.2f} MB")
-        print(f"  Compressed: {total_compressed / 1024 / 1024:.2f} MB")
-        print(f"  Savings: {(1 - total_compressed / total_original) * 100:.1f}%")
+        if self.use_rabitq:
+            print(f"  Original: {total_original / 1024 / 1024:.2f} MB")
+            print(f"  Compressed: {total_compressed / 1024 / 1024:.2f} MB")
+            print(f"  Savings: {(1 - total_compressed / total_original) * 100:.1f}%")
+        else:
+            print(f"  Stored: {total_original / 1024 / 1024:.2f} MB (no compression)")
         
         # Step 4: Build BKTree + RNG on centroids
         print(f"[4/5] Building BKTree+RNG on centroids...")
         self.bktree.build(self.centroids)
         self.rng.build(self.centroids)
         
-        print(f"✓ Index built with {self.replica_count}× replication + quantization")
+        msg = "quantization" if self.use_rabitq else "no quantization"
+        print(f"✓ Index built with {self.replica_count}× replication + {msg}")
     
     def _balanced_kmeans(self, data: np.ndarray, k: int, max_iter: int = 100):
         n = len(data)
@@ -143,7 +157,7 @@ class SPANNRaBitQReplica:
         centroid_dists = np.sum((self.centroids - query) ** 2, axis=1)
         nearest_centroids = np.argsort(centroid_dists)[:search_internal_result_num]
         
-        # Search quantized postings with deduplication
+        # Search postings with deduplication
         seen = set()
         all_dists = []
         all_indices = []
@@ -153,14 +167,21 @@ class SPANNRaBitQReplica:
             if len(posting_ids) == 0:
                 continue
             
-            # Search quantized codes
             codes = self.posting_codes[centroid_id]
             rabitq = self.posting_rabitqs[centroid_id]
-            posting_vecs = data[posting_ids]
             
             # Limit k to posting size
             search_k = min(max_check, len(posting_ids))
-            dists, local_indices = rabitq.search(query, codes, posting_vecs, k=search_k)
+            
+            if self.use_rabitq:
+                # Use RaBitQ distance estimation
+                posting_vecs = data[posting_ids]
+                dists, local_indices = rabitq.search(query, codes, posting_vecs, k=search_k)
+            else:
+                # Direct distance computation (codes = original vectors)
+                dists = np.sum((codes - query) ** 2, axis=1)
+                local_indices = np.argsort(dists)[:search_k]
+                dists = dists[local_indices]
             
             # Map to global IDs and deduplicate
             for dist, local_idx in zip(dists, local_indices):
