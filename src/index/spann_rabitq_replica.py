@@ -189,9 +189,8 @@ class SPANNRaBitQReplica:
             search_k = min(max_check, len(posting_ids))
             
             if self.use_rabitq:
-                # Use RaBitQ distance estimation
-                posting_vecs = data[posting_ids]
-                dists, local_indices = rabitq.search(query, codes, posting_vecs, k=search_k)
+                # Use RaBitQ distance estimation (no need to fetch original vectors)
+                dists, local_indices = rabitq.search(query, codes, None, k=search_k)
             else:
                 # Direct distance computation (codes = original vectors)
                 dists = np.sum((codes - query) ** 2, axis=1)
