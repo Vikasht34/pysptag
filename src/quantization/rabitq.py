@@ -43,12 +43,15 @@ class RaBitQ:
             # 1-bit: just sign
             codes = (residuals > 0).astype(np.uint8)
             cb = -0.5
+            self.res_min = None
         else:
-            # Multi-bit: uniform quantization
-            # Find min/max for scaling
-            res_min = residuals.min()
-            res_max = residuals.max()
+            # Multi-bit: uniform quantization per dimension
+            # Find min/max per dimension for better quantization
+            res_min = residuals.min(axis=0, keepdims=True)
+            res_max = residuals.max(axis=0, keepdims=True)
+            self.res_min = res_min
             self.scale = (res_max - res_min) / (self.n_levels - 1)
+            self.scale = np.where(self.scale == 0, 1, self.scale)  # Avoid division by zero
             
             # Quantize to [0, n_levels-1]
             codes = np.clip(
