@@ -34,8 +34,8 @@ def read_ivecs(filename):
             vectors.append(vec)
     return np.array(vectors, dtype=np.int32)
 
-def fast_kmeans(data, k, max_iter=20):
-    """Fast k-means with fewer iterations"""
+def fast_kmeans(data, k, max_iter=50):
+    """K-means clustering - same as C++ SPTAG"""
     n = len(data)
     
     # Initialize with random samples
@@ -81,10 +81,10 @@ groundtruth = read_ivecs(f'{data_dir}/sift_groundtruth.ivecs')
 print(f"✓ Loaded in {time.time()-t0:.1f}s - Base: {base.shape}, Queries: {queries.shape}")
 
 # Fast clustering
-print("\n[2/4] Fast k-means clustering...")
+print("\n[2/4] K-means clustering (50 iterations, same as C++ SPTAG)...")
 t0 = time.time()
 n_clusters = 100
-centroids, labels = fast_kmeans(base, n_clusters, max_iter=20)
+centroids, labels = fast_kmeans(base, n_clusters, max_iter=50)
 print(f"✓ Clustered in {time.time()-t0:.1f}s - {n_clusters} clusters")
 
 # Build posting lists
