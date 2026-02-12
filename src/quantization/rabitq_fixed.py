@@ -1,24 +1,16 @@
 """
-RaBitQ - Randomized Binary Quantization
-Correct implementation based on official C++ code
+RaBitQ - Simplified correct implementation based on official C++ code
 """
 import numpy as np
 from typing import Tuple
 from scipy.stats import ortho_group
 
 
-class RaBitQ:
-    """RaBitQ quantization - correct implementation"""
+class RaBitQFixed:
+    """RaBitQ quantization - simplified but correct"""
     
-    def __init__(self, dim: int, bq: int = 4):
-        """
-        Args:
-            dim: Vector dimensionality
-            bq: Query quantization bits (not used in 1-bit version)
-        """
+    def __init__(self, dim: int):
         self.dim = dim
-        self.bq = bq
-        
         # Random orthogonal matrix P
         self.P = ortho_group.rvs(dim).astype(np.float32)
         
@@ -73,15 +65,8 @@ class RaBitQ:
         
         return codes
     
-    def search(self, query: np.ndarray, codes: np.ndarray, data: np.ndarray, k: int = 10):
-        """Search - matches official estimator formula
-        
-        Args:
-            query: Query vector
-            codes: Binary codes
-            data: Original data (not used, kept for compatibility)
-            k: Number of neighbors
-        """
+    def search(self, query: np.ndarray, codes: np.ndarray, k: int = 10):
+        """Search - matches official estimator formula"""
         # Step 1: Compute query residual and rotate
         q_residual = query - self.centroid
         q_rotated = q_residual @ self.P.T
