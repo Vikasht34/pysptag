@@ -38,7 +38,7 @@ def read_ivecs(filename):
     return np.array(vectors, dtype=np.int32)
 
 print("="*80)
-print("SIFT1M: RaBitQ Bit Quantization Comparison")
+print("SIFT1M: RaBitQ Quantization Comparison (1-bit, 2-bit, 4-bit, no-quant)")
 print("="*80)
 
 data_dir = os.path.expanduser('~/pysptag/data/sift')
@@ -50,12 +50,13 @@ queries = read_fvecs(f'{data_dir}/sift_query.fvecs', max_vecs=100)
 groundtruth = read_ivecs(f'{data_dir}/sift_groundtruth.ivecs')[:100]
 print(f"✓ Base: {base.shape}, Queries: {queries.shape}")
 
-# Test each bit configuration
+# Test each bit configuration + no-quant
 results = []
 
-for bq in [1, 2, 4]:
+for config in [('1-bit', 1, True), ('2-bit', 2, True), ('4-bit', 4, True), ('no-quant', 4, False)]:
+    name, bq, use_rabitq = config
     print("\n" + "="*80)
-    print(f"TEST: {bq}-bit Quantization")
+    print(f"TEST: {name}")
     print("="*80)
     
     t0 = time.time()
@@ -64,7 +65,7 @@ for bq in [1, 2, 4]:
         target_posting_size=5000,
         replica_count=6,
         bq=bq,
-        use_rabitq=True
+        use_rabitq=use_rabitq
     )
     index.build(base)
     build_time = time.time() - t0
@@ -92,7 +93,7 @@ for bq in [1, 2, 4]:
     print(f"Recall@10: {np.mean(recalls):.2%}")
     
     results.append({
-        'bits': bq,
+        'name': name,
         'build_time': build_time,
         'search_time': search_time,
         'qps': len(queries)/search_time,
@@ -104,16 +105,17 @@ for bq in [1, 2, 4]:
 
 # Summary table
 print("\n" + "="*80)
-print("SUMMARY: All Bit Quantizations")
+print("SUMMARY: Quantization Comparison")
 print("="*80)
-print(f"{'Bits':<6} {'Build(s)':<10} {'Search(s)':<10} {'QPS':<8} {'p50(ms)':<8} {'p90(ms)':<8} {'p99(ms)':<8} {'Recall@10'}")
+print(f"{'Config':<10} {'Build(s)':<10} {'Search(s)':<10} {'QPS':<8} {'p50(ms)':<8} {'p90(ms)':<8} {'p99(ms)':<8} {'Recall@10'}")
 print("-"*80)
 for r in results:
-    print(f"{r['bits']:<6} {r['build_time']:<10.2f} {r['search_time']:<10.2f} {r['qps']:<8.1f} {r['p50']:<8.2f} {r['p90']:<8.2f} {r['p99']:<8.2f} {r['recall']:.2%}")
+    print(f"{r['name']:<10} {r['build_time']:<10.2f} {r['search_time']:<10.2f} {r['qps']:<8.1f} {r['p50']:<8.2f} {r['p90']:<8.2f} {r['p99']:<8.2f} {r['recall']:.2%}")
 print("="*80)
 
 print("\nRecommendation:")
-print("  1-bit: Fastest, lowest recall - use for very large scale")
-print("  2-bit: Balanced - good middle ground")
-print("  4-bit: Best recall - recommended for production")
+print("  1-bit: Fastest, 32× compression - use for very large scale")
+print("  2-bit: Balanced, 16× compression - good middle ground")
+print("  4-bit: Best recall, 8× compression - recommended for production")
+print("  no-quant: Highest recall, no compression - baseline comparison")
 print("="*80)
