@@ -73,12 +73,13 @@ def benchmark_search(index, base, queries, groundtruth, num_queries=1000, k=10, 
             else:
                 nearest_centroids = index.tree.search(query, index.centroids, 64, index.metric)
         else:
-            if index.metric == 'L2':
-                centroid_dists = np.sum((index.centroids - query) ** 2, axis=1)
-            else:
-                centroid_dists = -np.dot(index.centroids, query)
-            sorted_idx = np.argsort(centroid_dists)
-            nearest_centroids = sorted_idx[:64]
+            # Use faiss for fast centroid search
+            import faiss
+            if not hasattr(index, '_centroid_index'):
+                index._centroid_index = faiss.IndexFlatL2(index.centroids.shape[1])
+                index._centroid_index.add(index.centroids.astype(np.float32))
+            _, nearest_centroids = index._centroid_index.search(query.reshape(1, -1).astype(np.float32), 64)
+            nearest_centroids = nearest_centroids[0]
         centroid_search_times.append((time.perf_counter() - t0) * 1000)
         
         # Stage 2: Load posting lists
