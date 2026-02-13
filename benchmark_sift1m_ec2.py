@@ -57,29 +57,14 @@ def benchmark_search(index, base, queries, groundtruth, num_queries=1000, k=10, 
         query = queries[i]
         t_total = time.perf_counter()
         
-        # Stage 1: Find nearest centroids
+        # Stage 1: Find nearest centroids using faiss (fast!)
         t0 = time.perf_counter()
-        if i == 0:  # Debug first query
-            print(f"  DEBUG: hasattr rng={hasattr(index, 'rng')}, graph len={len(index.rng.graph) if hasattr(index, 'rng') else 0}")
-        
-        if hasattr(index, 'rng') and len(index.rng.graph) > 0:
-            if index.tree_type == 'BKT':
-                from src.core.bktree_rng_search import bktree_rng_search
-                nearest_centroids = bktree_rng_search(
-                    query, index.centroids, index.tree.tree_roots,
-                    index.tree.tree_start, index.rng.graph,
-                    64, index.metric
-                )
-            else:
-                nearest_centroids = index.tree.search(query, index.centroids, 64, index.metric)
-        else:
-            # Use faiss for fast centroid search
-            import faiss
-            if not hasattr(index, '_centroid_index'):
-                index._centroid_index = faiss.IndexFlatL2(index.centroids.shape[1])
-                index._centroid_index.add(index.centroids.astype(np.float32))
-            _, nearest_centroids = index._centroid_index.search(query.reshape(1, -1).astype(np.float32), 64)
-            nearest_centroids = nearest_centroids[0]
+        import faiss
+        if not hasattr(index, '_centroid_index'):
+            index._centroid_index = faiss.IndexFlatL2(index.centroids.shape[1])
+            index._centroid_index.add(index.centroids.astype(np.float32))
+        _, nearest_centroids = index._centroid_index.search(query.reshape(1, -1).astype(np.float32), 64)
+        nearest_centroids = nearest_centroids[0]
         centroid_search_times.append((time.perf_counter() - t0) * 1000)
         
         # Stage 2: Load posting lists
