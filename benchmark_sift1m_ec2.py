@@ -181,7 +181,8 @@ def run_benchmark(quant_bits, preload=False):
     print(f"  Base: {base.shape}, Queries: {queries.shape}")
     
     # Build or load index
-    if not os.path.exists(disk_path):
+    metadata_path = f'{disk_path}/metadata.pkl'
+    if not os.path.exists(metadata_path):
         print(f"\n[2/3] Building index...")
         t0 = time.time()
         index = SPANNDiskOptimized(
