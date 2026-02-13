@@ -31,6 +31,8 @@ class RaBitQ:
         self.f_rescale = None
         self.f_error = None
         self.scale = None  # Quantization scale for multi-bit
+        self.delta = None  # Scalar quantization delta
+        self.vl = None     # Scalar quantization vl
         
     def build(self, data: np.ndarray):
         """Build index with multi-bit quantization"""
@@ -51,27 +53,50 @@ class RaBitQ:
             # Multi-bit: optimized quantization with best_rescale_factor
             codes = self._quantize_multibit(residuals)
         
-        # Step 4: Compute RaBitQ factors (using RAW residuals!)
+        # Step 4: Compute RaBitQ factors
         cb = -(self.n_levels - 1) / 2.0
         xu_cb = codes.astype(np.float32) + cb
         
-        l2_sqr = np.sum(residuals ** 2, axis=1)
-        l2_norm = np.sqrt(l2_sqr)
-        
-        # Dot products with RAW residuals (not normalized!)
-        ip_residual_xucb = np.sum(residuals * xu_cb, axis=1)
-        ip_residual_xucb = np.where(ip_residual_xucb == 0, np.inf, ip_residual_xucb)
-        
-        ip_cent_xucb = np.sum(self.centroid * xu_cb, axis=1)
-        
-        # Compute factors (same formula for all bit widths!)
-        if self.metric == 'L2':
-            self.f_add = l2_sqr + 2 * l2_sqr * ip_cent_xucb / ip_residual_xucb
-            self.f_rescale = -2 * l2_sqr / ip_residual_xucb
-        elif self.metric in ('IP', 'Cosine'):
-            ip_residual_c = np.sum(residuals * self.centroid, axis=1)
-            self.f_add = -ip_residual_c + l2_sqr * ip_cent_xucb / ip_residual_xucb
-            self.f_rescale = -l2_sqr / ip_residual_xucb
+        if self.bq == 1:
+            # 1-bit: Use original RaBitQ formula
+            l2_sqr = np.sum(residuals ** 2, axis=1)
+            
+            ip_residual_xucb = np.sum(residuals * xu_cb, axis=1)
+            ip_residual_xucb = np.where(ip_residual_xucb == 0, np.inf, ip_residual_xucb)
+            
+            ip_cent_xucb = np.sum(self.centroid * xu_cb, axis=1)
+            
+            if self.metric == 'L2':
+                self.f_add = l2_sqr + 2 * l2_sqr * ip_cent_xucb / ip_residual_xucb
+                self.f_rescale = -2 * l2_sqr / ip_residual_xucb
+            elif self.metric in ('IP', 'Cosine'):
+                ip_residual_c = np.sum(residuals * self.centroid, axis=1)
+                self.f_add = -ip_residual_c + l2_sqr * ip_cent_xucb / ip_residual_xucb
+                self.f_rescale = -l2_sqr / ip_residual_xucb
+        else:
+            # Multi-bit: Use scalar quantization with delta rescaling
+            cb = -(self.n_levels - 1) / 2.0
+            xu_cb = codes.astype(np.float32) + cb
+            
+            # Dequantize codes back to residual space
+            dequantized_residuals = codes.astype(np.float32) * self.scale + self.res_min
+            
+            # Compute norms for delta
+            norm_residual = np.linalg.norm(residuals, axis=1)
+            norm_quan = np.linalg.norm(xu_cb, axis=1)
+            
+            # Compute cosine similarity
+            ip_residual_xucb = np.sum(residuals * xu_cb, axis=1)
+            cos_sim = ip_residual_xucb / (norm_residual * norm_quan + 1e-10)
+            
+            # Delta rescaling factor
+            delta = norm_residual / (norm_quan + 1e-10) * cos_sim
+            
+            # Store for search
+            self.delta = delta
+            
+            self.f_add = None
+            self.f_rescale = None
         
         return codes
     
@@ -125,58 +150,59 @@ class RaBitQ:
         return best_t
     
     def _quantize_multibit(self, residuals: np.ndarray) -> np.ndarray:
-        """Quantize residuals using optimized multi-bit quantization
-        
-        Format: 1 bit for sign + (bq-1) bits for magnitude
-        """
+        """Quantize residuals using uniform quantization (simpler approach)"""
         n, dim = residuals.shape
-        codes = np.zeros((n, dim), dtype=np.uint8)
         
-        kEps = 1e-5
-        ex_bits = self.bq - 1  # Reserve 1 bit for sign
+        # Use global min/max for uniform quantization
+        res_min = residuals.min()
+        res_max = residuals.max()
+        self.res_min = res_min
+        self.res_max = res_max
         
-        for i in range(n):
-            # Extract sign
-            signs = (residuals[i] > 0).astype(np.uint8)
-            
-            # Take absolute values for magnitude quantization
-            o_abs = np.abs(residuals[i])
-            
-            # Find optimal rescaling factor
-            t = self._best_rescale_factor(o_abs, ex_bits)
-            
-            # Quantize magnitude
-            quantized = np.floor(t * o_abs + kEps).astype(np.int32)
-            quantized = np.clip(quantized, 0, (1 << ex_bits) - 1)
-            
-            # Combine: sign bit in MSB, magnitude in lower bits
-            codes[i] = quantized + (signs << ex_bits)
+        # Quantize to [0, 2^bq - 1]
+        scale = (res_max - res_min) / (self.n_levels - 1)
+        if scale == 0:
+            scale = 1
+        self.scale = scale
+        
+        codes = np.clip(
+            np.round((residuals - res_min) / scale),
+            0, self.n_levels - 1
+        ).astype(np.uint8)
         
         return codes
     
     def search(self, query: np.ndarray, codes: np.ndarray, data: np.ndarray, k: int = 10):
-        """Search with RaBitQ formula (works for all bit widths!)"""
+        """Search with RaBitQ (1-bit) or scalar quantization (multi-bit)"""
         q_residual = query - self.centroid
         
-        # Compute c_B for current bit width
-        cb = -(self.n_levels - 1) / 2.0
-        
-        # Compute inner product between codes and query residual
-        ip_codes_qres = np.sum(codes * q_residual, axis=1).astype(np.float32)
-        sumq = np.sum(q_residual)
-        ip_x0_qr = ip_codes_qres + cb * sumq
-        
-        # Metric-specific G_add computation
-        if self.metric == 'L2':
-            # L2: G_add = ||q - c||^2
-            G_add = np.sum(q_residual ** 2)
-        elif self.metric in ('IP', 'Cosine'):
-            # IP/Cosine: G_add = -<q, c>
-            G_add = -np.dot(query, self.centroid)
-        
-        # RaBitQ distance estimation (same formula for 1-bit, 2-bit, 4-bit!)
-        estimated_dist = self.f_add + G_add + self.f_rescale * ip_x0_qr
-        estimated_dist = np.maximum(estimated_dist, 0)
+        if self.bq == 1:
+            # 1-bit: Use RaBitQ distance estimation formula
+            cb = -0.5
+            ip_codes_qres = np.sum(codes * q_residual, axis=1).astype(np.float32)
+            sumq = np.sum(q_residual)
+            ip_x0_qr = ip_codes_qres + cb * sumq
+            
+            # Metric-specific G_add computation
+            if self.metric == 'L2':
+                G_add = np.sum(q_residual ** 2)
+            elif self.metric in ('IP', 'Cosine'):
+                G_add = -np.dot(query, self.centroid)
+            
+            estimated_dist = self.f_add + G_add + self.f_rescale * ip_x0_qr
+            estimated_dist = np.maximum(estimated_dist, 0)
+        else:
+            # Multi-bit: Dequantize and reconstruct
+            dequantized_residuals = codes.astype(np.float32) * self.scale + self.res_min
+            reconstructed_vectors = dequantized_residuals + self.centroid
+            
+            # Compute distances
+            if self.metric == 'L2':
+                estimated_dist = np.sum((reconstructed_vectors - query) ** 2, axis=1)
+            elif self.metric == 'IP':
+                estimated_dist = -np.dot(reconstructed_vectors, query)
+            elif self.metric == 'Cosine':
+                estimated_dist = -np.dot(reconstructed_vectors, query)
         
         # Get top-k
         k = min(k, len(estimated_dist))
