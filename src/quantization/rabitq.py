@@ -1,23 +1,28 @@
 """
 RaBitQ - Randomized Binary Quantization
 Correct implementation based on official C++ code
+Supports L2, InnerProduct, and Cosine metrics
 """
 import numpy as np
-from typing import Tuple
+from typing import Tuple, Literal
 from scipy.stats import ortho_group
+
+MetricType = Literal['L2', 'IP', 'Cosine']
 
 
 class RaBitQ:
     """RaBitQ quantization - correct implementation"""
     
-    def __init__(self, dim: int, bq: int = 4):
+    def __init__(self, dim: int, bq: int = 4, metric: MetricType = 'L2'):
         """
         Args:
             dim: Vector dimensionality
             bq: Bits per dimension (1, 2, 4, or 8)
+            metric: Distance metric (L2, IP, or Cosine)
         """
         self.dim = dim
         self.bq = bq
+        self.metric = metric
         self.n_levels = 2 ** bq  # Number of quantization levels
         
         # Factors computed during build
@@ -101,17 +106,26 @@ class RaBitQ:
             sumq = np.sum(q_residual)
             ip_x0_qr = ip_codes_qres + cb * sumq
             
-            G_add = np.sum(q_residual ** 2)
+            # Metric-specific G_add computation
+            if self.metric == 'L2':
+                G_add = np.sum(q_residual ** 2)
+            elif self.metric in ('IP', 'Cosine'):
+                G_add = 1 - np.dot(q_residual, self.centroid)
+            
             estimated_dist = self.f_add + G_add + self.f_rescale * ip_x0_qr
             estimated_dist = np.maximum(estimated_dist, 0)
         else:
-            # Multi-bit: Dequantize and compute L2 distance directly
-            # dequantized = codes * scale + res_min
+            # Multi-bit: Dequantize and compute distance directly
             dequantized = codes.astype(np.float32) * self.scale + self.res_min
             reconstructed = dequantized + self.centroid
             
-            # Compute L2 distances
-            estimated_dist = np.sum((reconstructed - query) ** 2, axis=1)
+            # Metric-specific distance computation
+            if self.metric == 'L2':
+                estimated_dist = np.sum((reconstructed - query) ** 2, axis=1)
+            elif self.metric == 'IP':
+                estimated_dist = -np.dot(reconstructed, query)
+            elif self.metric == 'Cosine':
+                estimated_dist = -np.dot(reconstructed, query)
         
         # Get top-k
         k = min(k, len(estimated_dist))

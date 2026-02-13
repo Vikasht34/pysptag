@@ -91,7 +91,7 @@ class SPANNRaBitQReplica:
             
             if self.use_rabitq:
                 # Quantize this posting
-                rabitq = RaBitQ(dim=self.dim, bq=self.bq)
+                rabitq = RaBitQ(dim=self.dim, bq=self.bq, metric=self.metric)
                 codes = rabitq.build(posting_vecs)
                 
                 self.posting_rabitqs.append(rabitq)
