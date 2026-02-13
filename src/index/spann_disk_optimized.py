@@ -74,6 +74,7 @@ class SPANNDiskOptimized:
         self._posting_cache: Dict[int, Tuple] = {}
         self._cache_hits = 0
         self._cache_misses = 0
+        self._bytes_read = 0  # Track bytes read per query
         
         # Create disk directory
         os.makedirs(disk_path, exist_ok=True)
@@ -206,6 +207,10 @@ class SPANNDiskOptimized:
         posting_file = os.path.join(self.disk_path, 'postings', f'posting_{centroid_id}.bin')
         if not os.path.exists(posting_file):
             return None, None, None
+        
+        # Track bytes read
+        file_size = os.path.getsize(posting_file)
+        self._bytes_read += file_size
         
         with open(posting_file, 'rb') as f:
             # Read header

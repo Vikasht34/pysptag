@@ -35,13 +35,18 @@ def benchmark_search(index, base, queries, groundtruth, num_queries=1000, k=10, 
     """Search benchmark using index.search() API"""
     recalls = []
     latencies = []
+    bytes_read_list = []
     
     print(f"\nSearching {num_queries} queries...")
     for i in range(num_queries):
+        # Reset counter
+        index._bytes_read = 0
+        
         t0 = time.perf_counter()
         ids, _ = index.search(queries[i], base, k=k, max_check=max_check)
         latency = (time.perf_counter() - t0) * 1000
         latencies.append(latency)
+        bytes_read_list.append(index._bytes_read)
         
         # Recall
         recall = len(set(ids) & set(int(x) for x in groundtruth[i][:k])) / k
@@ -57,7 +62,8 @@ def benchmark_search(index, base, queries, groundtruth, num_queries=1000, k=10, 
             'p90': np.percentile(latencies, 90),
             'p99': np.percentile(latencies, 99),
             'mean': np.mean(latencies)
-        }
+        },
+        'bytes_per_query_kb': np.mean(bytes_read_list) / 1024
     }
     """Detailed search benchmark with latency breakdown"""
     recalls = []
@@ -267,6 +273,8 @@ def run_benchmark(quant_bits, preload=False):
     print(f"  p90:             {results['latency']['p90']:.2f} ms")
     print(f"  p99:             {results['latency']['p99']:.2f} ms")
     print(f"  mean:            {results['latency']['mean']:.2f} ms")
+    print(f"\nDisk I/O per query:")
+    print(f"  Data read:       {results['bytes_per_query_kb']:.1f} KB")
     print(f"{'='*70}\n")
     
     return results
@@ -291,9 +299,9 @@ if __name__ == '__main__':
     print("\n" + "="*70)
     print("SUMMARY COMPARISON")
     print("="*70)
-    print(f"{'Config':<12} {'Recall':<10} {'p50 (ms)':<12} {'p99 (ms)':<12}")
+    print(f"{'Config':<12} {'Recall':<10} {'p50 (ms)':<12} {'p99 (ms)':<12} {'Disk I/O (KB)':<15}")
     print("-"*70)
     for key, res in all_results.items():
         print(f"{key:<12} {res['recall']:>6.2f}%   {res['latency']['p50']:>8.2f}     "
-              f"{res['latency']['p99']:>8.2f}")
+              f"{res['latency']['p99']:>8.2f}     {res['bytes_per_query_kb']:>10.1f}")
     print("="*70)
