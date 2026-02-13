@@ -3,23 +3,50 @@ Test SIFT1M with disk-based SPANN
 Saves posting lists to disk, loads on-demand during search
 """
 import numpy as np
-import h5py
+import struct
 import time
 import sys
 import os
 sys.path.insert(0, '.')
 from src.index.spann_disk import SPANNDiskBased
 
+def read_fvecs(filename, max_vecs=None):
+    vectors = []
+    with open(filename, 'rb') as f:
+        while True:
+            dim_bytes = f.read(4)
+            if not dim_bytes:
+                break
+            dim = struct.unpack('i', dim_bytes)[0]
+            vec = struct.unpack('f' * dim, f.read(4 * dim))
+            vectors.append(vec)
+            if max_vecs and len(vectors) >= max_vecs:
+                break
+    return np.array(vectors, dtype=np.float32)
+
+def read_ivecs(filename):
+    vectors = []
+    with open(filename, 'rb') as f:
+        while True:
+            dim_bytes = f.read(4)
+            if not dim_bytes:
+                break
+            dim = struct.unpack('i', dim_bytes)[0]
+            vec = struct.unpack('i' * dim, f.read(4 * dim))
+            vectors.append(vec)
+    return np.array(vectors, dtype=np.int32)
+
 print("="*80)
 print("SIFT1M: Disk-Based SPANN Test")
 print("="*80)
 
+data_dir = os.path.expanduser('~/pysptag/data/sift')
+
 # Load SIFT1M
 print("\nLoading SIFT1M dataset...")
-with h5py.File('sift-128-euclidean.hdf5', 'r') as f:
-    base = f['train'][:]
-    queries = f['test'][:100]
-    groundtruth = f['neighbors'][:100]
+base = read_fvecs(f'{data_dir}/sift_base.fvecs')
+queries = read_fvecs(f'{data_dir}/sift_query.fvecs', max_vecs=100)
+groundtruth = read_ivecs(f'{data_dir}/sift_groundtruth.ivecs')[:100]
 
 print(f"✓ Base: {base.shape}, Queries: {queries.shape}")
 
@@ -48,6 +75,19 @@ for name, bq in configs:
         print(f"✓ Index loaded in {load_time:.2f}s")
     else:
         print(f"Building new index...")
+        t0 = time.time()
+        index = SPANNDiskBased(
+            dim=128,
+            target_posting_size=5000,
+            replica_count=6,
+            bq=bq,
+            use_rabitq=True,
+            tree_type='KDT',  # Use KDTree for speed
+            disk_path=disk_path
+        )
+        index.build(base)
+        build_time = time.time() - t0
+        print(f"✓ Index built in {build_time:.2f}s")
         t0 = time.time()
         index = SPANNDiskBased(
             dim=128,

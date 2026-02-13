@@ -6,7 +6,6 @@ import numpy as np
 import os
 import pickle
 from typing import Tuple, Optional
-from ..core.bktree import BKTree
 from ..core.rng import RNG, MetricType
 from ..quantization.rabitq_numba import RaBitQNumba
 
@@ -20,15 +19,29 @@ class SPANNDiskBased:
         target_posting_size: int = 10000,
         replica_count: int = 8,
         bq: int = 4,
+        use_rabitq: bool = True,
         metric: MetricType = 'L2',
+        tree_type: str = 'KDT',  # 'BKT' or 'KDT'
         disk_path: str = './spann_index'
     ):
         self.dim = dim
         self.target_posting_size = target_posting_size
         self.replica_count = replica_count
         self.bq = bq
+        self.use_rabitq = use_rabitq
         self.metric = metric
+        self.tree_type = tree_type
         self.disk_path = disk_path
+        
+        # Create tree
+        if tree_type == 'BKT':
+            from ..core.bktree import BKTree
+            self.tree = BKTree(num_trees=1, kmeans_k=32)
+        else:  # KDT
+            from ..core.kdtree import KDTree
+            self.tree = KDTree(num_trees=1)
+            
+        self.rng = RNG(neighborhood_size=32, metric=metric)
         
         # Create disk directory
         os.makedirs(disk_path, exist_ok=True)
@@ -95,32 +108,49 @@ class SPANNDiskBased:
             posting_ids = np.array(posting_ids, dtype=np.int32)
             posting_vecs = data[posting_ids]
             
-            # Quantize
-            rabitq = RaBitQNumba(dim=self.dim, bq=self.bq, metric=self.metric)
-            codes = rabitq.build(posting_vecs)
-            
-            # Save to disk
-            posting_file = os.path.join(self.disk_path, 'postings', f'posting_{i}.pkl')
-            with open(posting_file, 'wb') as f:
-                pickle.dump({
-                    'posting_ids': posting_ids,
-                    'codes': codes,
-                    'rabitq': rabitq
-                }, f)
-            
-            total_original += posting_vecs.nbytes
-            total_compressed += codes.nbytes + posting_ids.nbytes
+            if self.use_rabitq:
+                # Quantize
+                rabitq = RaBitQNumba(dim=self.dim, bq=self.bq, metric=self.metric)
+                codes = rabitq.build(posting_vecs)
+                
+                # Save to disk
+                posting_file = os.path.join(self.disk_path, 'postings', f'posting_{i}.pkl')
+                with open(posting_file, 'wb') as f:
+                    pickle.dump({
+                        'posting_ids': posting_ids,
+                        'codes': codes,
+                        'rabitq': rabitq
+                    }, f)
+                
+                total_original += posting_vecs.nbytes
+                total_compressed += codes.nbytes + posting_ids.nbytes
+            else:
+                # No quantization - save original vectors
+                posting_file = os.path.join(self.disk_path, 'postings', f'posting_{i}.pkl')
+                with open(posting_file, 'wb') as f:
+                    pickle.dump({
+                        'posting_ids': posting_ids,
+                        'codes': posting_vecs,
+                        'rabitq': None
+                    }, f)
+                
+                total_original += posting_vecs.nbytes
+                total_compressed += posting_vecs.nbytes + posting_ids.nbytes
             
             if (i + 1) % 50 == 0:
                 print(f"  Saved {i+1}/{self.num_clusters} postings")
         
-        print(f"  Original: {total_original/1024**2:.2f} MB")
-        print(f"  Compressed: {total_compressed/1024**2:.2f} MB")
-        print(f"  Savings: {(1 - total_compressed/total_original)*100:.1f}%")
+        if self.use_rabitq:
+            print(f"  Original: {total_original/1024**2:.2f} MB")
+            print(f"  Compressed: {total_compressed/1024**2:.2f} MB")
+            print(f"  Savings: {(1 - total_compressed/total_original)*100:.1f}%")
+        else:
+            print(f"  Stored: {total_original/1024**2:.2f} MB (no compression)")
         
-        # Step 4: Build BKTree on centroids (for fast centroid search)
-        print("[4/5] Building BKTree on centroids...")
-        self.bktree = BKTree(self.centroids)
+        # Step 4: Build tree + RNG on centroids
+        print(f"[4/5] Building {self.tree_type}+RNG on centroids...")
+        self.tree.build(self.centroids)
+        self.rng.build(self.centroids)
         
         # Step 5: Save metadata
         print("[5/5] Saving metadata...")
@@ -129,9 +159,12 @@ class SPANNDiskBased:
             'num_clusters': self.num_clusters,
             'replica_count': self.replica_count,
             'bq': self.bq,
+            'use_rabitq': self.use_rabitq,
             'metric': self.metric,
+            'tree_type': self.tree_type,
             'centroids': self.centroids,
-            'bktree': self.bktree
+            'tree': self.tree,
+            'rng': self.rng
         }
         with open(os.path.join(self.disk_path, 'metadata.pkl'), 'wb') as f:
             pickle.dump(metadata, f)
@@ -152,13 +185,16 @@ class SPANNDiskBased:
             dim=metadata['dim'],
             replica_count=metadata['replica_count'],
             bq=metadata['bq'],
+            use_rabitq=metadata.get('use_rabitq', True),
             metric=metadata['metric'],
+            tree_type=metadata.get('tree_type', 'BKT'),
             disk_path=disk_path
         )
         
         index.num_clusters = metadata['num_clusters']
         index.centroids = metadata['centroids']
-        index.bktree = metadata['bktree']
+        index.tree = metadata['tree']
+        index.rng = metadata['rng']
         
         print(f"✓ Index loaded: {index.num_clusters} clusters, {len(index.centroids)} centroids")
         return index
@@ -184,19 +220,33 @@ class SPANNDiskBased:
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Search with disk-based posting lists"""
         
-        # Find nearest centroids (brute force is fast for <10K centroids)
-        if self.metric == 'L2':
-            centroid_dists = np.sum((self.centroids - query) ** 2, axis=1)
-        elif self.metric == 'IP':
-            centroid_dists = -np.dot(self.centroids, query)
-        elif self.metric == 'Cosine':
-            centroid_dists = -np.dot(self.centroids, query)
-        
-        nearest_centroids = np.argsort(centroid_dists)[:search_internal_result_num]
+        # Find nearest centroids using tree + RNG
+        if hasattr(self, 'rng') and len(self.rng.graph) > 0:
+            if self.tree_type == 'BKT':
+                from ..core.bktree_rng_search import bktree_rng_search
+                nearest_centroids = bktree_rng_search(
+                    query, self.centroids, self.tree.tree_roots,
+                    self.tree.tree_start, self.rng.graph,
+                    search_internal_result_num, self.metric
+                )
+            else:  # KDT
+                nearest_centroids = self.tree.search(
+                    query, self.centroids, search_internal_result_num, self.metric
+                )
+        else:
+            # Fallback to brute force
+            if self.metric == 'L2':
+                centroid_dists = np.sum((self.centroids - query) ** 2, axis=1)
+            elif self.metric == 'IP':
+                centroid_dists = -np.dot(self.centroids, query)
+            elif self.metric == 'Cosine':
+                centroid_dists = -np.dot(self.centroids, query)
+            nearest_centroids = np.argsort(centroid_dists)[:search_internal_result_num]
         
         # Search postings (load from disk on-demand)
         seen = set()
         all_indices = []
+        all_dists = []
         
         for centroid_id in nearest_centroids:
             # Load posting from disk
@@ -206,20 +256,56 @@ class SPANNDiskBased:
             
             search_k = min(max_check, len(posting_ids))
             
-            # Search posting
-            _, local_indices = rabitq.search(query, codes, k=search_k)
+            if self.use_rabitq:
+                # Search posting with RaBitQ
+                _, local_indices = rabitq.search(query, codes, k=search_k)
+                local_dists = None
+            else:
+                # Direct distance computation (no quantization)
+                if self.metric == 'L2':
+                    dists = np.sum((codes - query) ** 2, axis=1)
+                elif self.metric == 'IP':
+                    dists = -np.dot(codes, query)
+                elif self.metric == 'Cosine':
+                    dists = -np.dot(codes, query)
+                local_indices = np.argsort(dists)[:search_k]
+                local_dists = dists[local_indices]
             
             # Deduplicate
-            for local_idx in local_indices:
+            for idx, local_idx in enumerate(local_indices):
                 global_id = posting_ids[local_idx]
                 if global_id not in seen:
                     seen.add(global_id)
                     all_indices.append(global_id)
+                    if local_dists is not None:
+                        all_dists.append(local_dists[idx])
                     if len(all_indices) >= max_check:
                         break
             
             if len(all_indices) >= max_check:
                 break
+        
+        # Rerank (skip if we already have true distances)
+        if len(all_indices) == 0:
+            return np.array([]), np.array([])
+        
+        all_indices = np.array(all_indices)
+        
+        if self.use_rabitq:
+            # Need to rerank with true distances
+            if self.metric == 'L2':
+                true_dists = np.sum((data[all_indices] - query) ** 2, axis=1)
+            elif self.metric == 'IP':
+                true_dists = -np.dot(data[all_indices], query)
+            elif self.metric == 'Cosine':
+                true_dists = -np.dot(data[all_indices], query)
+            top_k_idx = np.argsort(true_dists)[:k]
+        else:
+            # Already have true distances
+            true_dists = np.array(all_dists)
+            top_k_idx = np.argsort(true_dists)[:k]
+        
+        return true_dists[top_k_idx], all_indices[top_k_idx]
         
         # Rerank with true distances
         if len(all_indices) == 0:
