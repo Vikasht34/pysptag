@@ -158,11 +158,11 @@ class SPANNDiskOptimized:
         init_graph = []
         for i in range(len(self.centroids)):
             if self.tree_type == 'BKT':
-                neighbors = self.tree.search(self.centroids[i], self.centroids, 
-                                            self.rng.neighborhood_size, self.metric)
+                _, neighbors = self.tree.search(self.centroids[i], self.centroids, 
+                                               self.rng.neighborhood_size, max_check=-1)
             else:
                 neighbors = self.tree.search(self.centroids[i], self.centroids,
-                                            self.rng.neighborhood_size, self.metric)
+                                            self.rng.neighborhood_size)
             init_graph.append(neighbors)
         
         self.rng.build(self.centroids, init_graph=init_graph)
