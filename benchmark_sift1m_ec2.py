@@ -194,7 +194,7 @@ def run_benchmark(quant_bits, preload=False):
             target_posting_size=800,
             disk_path=disk_path,
             use_rabitq=(quant_bits > 0),
-            rabitq_bits=quant_bits if quant_bits > 0 else None,
+            bq=quant_bits if quant_bits > 0 else 4,
             preload_postings=preload
         )
         index.build(base)
@@ -213,7 +213,7 @@ def run_benchmark(quant_bits, preload=False):
             target_posting_size=800,
             disk_path=disk_path,
             use_rabitq=(quant_bits > 0),
-            rabitq_bits=quant_bits if quant_bits > 0 else None,
+            bq=quant_bits if quant_bits > 0 else 4,
             preload_postings=preload
         )
         with open(f'{disk_path}/metadata.pkl', 'rb') as f:
