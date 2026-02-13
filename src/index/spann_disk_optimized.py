@@ -29,7 +29,9 @@ class SPANNDiskOptimized:
         disk_path: str = './spann_index',
         cache_size: int = 128,
         num_threads: int = 1,
-        clustering: str = 'hierarchical'  # 'kmeans' or 'hierarchical'
+        clustering: str = 'hierarchical',  # 'kmeans' or 'hierarchical'
+        use_rng_filtering: bool = True,  # Enable RNG filtering for NPA
+        preload_postings: bool = False  # Preload all postings into memory
     ):
         self.dim = dim
         self.target_posting_size = target_posting_size
@@ -41,12 +43,15 @@ class SPANNDiskOptimized:
         self.disk_path = disk_path
         self.cache_size = cache_size
         self.num_threads = num_threads
+        self.use_rng_filtering = use_rng_filtering
+        self.preload_postings = preload_postings
         
         # Select clustering algorithm
         if clustering == 'hierarchical':
             self.clusterer = HierarchicalClustering(
-                select_threshold=6,
-                split_threshold=25,
+                select_threshold=0,  # Auto-compute from ratio (SPTAG default)
+                split_threshold=0,  # Auto-compute from ratio (SPTAG default)
+                split_factor=0,  # Auto-compute from ratio (SPTAG default)
                 ratio=0.01,
                 kmeans_k=32,
                 leaf_size=8,
@@ -74,6 +79,15 @@ class SPANNDiskOptimized:
         os.makedirs(disk_path, exist_ok=True)
         os.makedirs(os.path.join(disk_path, 'postings'), exist_ok=True)
     
+    def preload_all_postings(self):
+        """Preload all postings into memory for faster search."""
+        print(f"Preloading {self.num_clusters} postings into memory...")
+        for i in range(self.num_clusters):
+            self._load_posting_mmap(i)
+            if (i + 1) % 1000 == 0:
+                print(f"  Loaded {i+1}/{self.num_clusters} postings...")
+        print(f"✓ All postings preloaded ({len(self._posting_cache)} in cache)")
+    
     def build(self, data: np.ndarray):
         """Build index with SPTAG-style clustering"""
         n, dim = data.shape
@@ -91,22 +105,8 @@ class SPANNDiskOptimized:
         # Step 2: Assign with replicas and posting limits
         print(f"[2/5] Assigning vectors to {self.num_clusters} centroids...")
         self.posting_lists, replica_counts = self.clusterer.assign_with_replicas(
-            data, self.centroids, self.replica_count, self.target_posting_size
-        )
-        print(f"  Clustering: {self.clusterer.__class__.__name__}")
-        print(f"  Posting limit: {self.target_posting_size} vectors")
-        print(f"  Replica count: {self.replica_count}")
-        
-        # Step 1: Cluster data
-        print("[1/5] Clustering...")
-        target_clusters = max(1, n // self.target_posting_size)
-        self.centroids, labels = self.clusterer.cluster(data, target_clusters)
-        self.num_clusters = len(self.centroids)
-        
-        # Step 2: Assign with replicas and posting limits
-        print(f"[2/5] Assigning vectors to {self.num_clusters} centroids...")
-        self.posting_lists, replica_counts = self.clusterer.assign_with_replicas(
-            data, self.centroids, self.replica_count, self.target_posting_size
+            data, self.centroids, self.replica_count, self.target_posting_size,
+            use_rng_filtering=self.use_rng_filtering
         )
         
         # Step 3: Save posting lists in binary format (mmap-friendly)
@@ -236,8 +236,8 @@ class SPANNDiskOptimized:
                 import pickle
                 rabitq = pickle.loads(mm[offset:offset+rabitq_size])
         
-        # Cache result (keep only recent cache_size items)
-        if len(self._posting_cache) >= self.cache_size:
+        # Cache result (keep only recent cache_size items, unless preload_postings=True)
+        if not self.preload_postings and len(self._posting_cache) >= self.cache_size:
             # Remove oldest (simple FIFO, could use LRU)
             self._posting_cache.pop(next(iter(self._posting_cache)))
         
@@ -392,7 +392,7 @@ class SPANNDiskOptimized:
             true_dists = np.array(all_dists)
             top_k_idx = np.argsort(true_dists)[:k]
         
-        return true_dists[top_k_idx], all_indices[top_k_idx]
+        return all_indices[top_k_idx], true_dists[top_k_idx]
     
     def _search_postings_sequential(self, query, postings, nearest_centroids, max_check):
         """Sequential posting search (original)"""

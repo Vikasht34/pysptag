@@ -70,16 +70,34 @@ class KMeansClustering(ClusteringAlgorithm):
         data: np.ndarray,
         centroids: np.ndarray,
         replica_count: int,
-        posting_limit: int
+        posting_limit: int,
+        use_rng_filtering: bool = True
     ) -> Tuple[List[List[int]], np.ndarray]:
         """
-        Assign vectors to multiple centroids with SPTAG-style posting limits.
-        Only truncate if expected posting size exceeds limit.
+        Assign vectors to multiple centroids with optional RNG filtering.
         """
         n = len(data)
         k = len(centroids)
         
-        # Find top-k nearest centroids
+        if use_rng_filtering:
+            # Use RNG filtering for diverse selection
+            from .rng_assignment import assign_with_rng_filtering, truncate_postings_by_distance
+            
+            postings, replica_counts = assign_with_rng_filtering(
+                data, centroids, replica_count, 
+                candidate_num=min(64, k),
+                rng_factor=1.0,
+                metric=self.metric
+            )
+            
+            # Truncate by distance if needed
+            postings = truncate_postings_by_distance(
+                postings, data, centroids, posting_limit, self.metric
+            )
+            
+            return postings, replica_counts
+        
+        # Original simple assignment (for comparison)
         if self.metric == 'L2':
             dists = np.sum((data[:, None, :] - centroids[None, :, :]) ** 2, axis=2)
         else:

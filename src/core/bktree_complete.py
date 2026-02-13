@@ -66,16 +66,16 @@ class BKTree:
         self.nodes = []
         self.tree_roots = []
         
-        # Build each tree
+        # Build each tree on FULL dataset
+        # Note: self.samples is used for k-means sampling, not tree size!
         for tree_id in range(self.num_trees):
-            # Sample indices for this tree
-            if self.samples > 0 and self.samples < n:
-                sample_indices = np.random.choice(n, self.samples, replace=False)
-                tree_indices = indices[sample_indices]
-            else:
-                tree_indices = indices.copy()
+            # Use all indices for tree building
+            tree_indices = indices.copy()
             
-            # Build tree recursively
+            # Shuffle for randomness
+            np.random.shuffle(tree_indices)
+            
+            # Build tree recursively on ALL data
             root_idx = self._build_node(data, tree_indices, 0, len(tree_indices))
             self.tree_roots.append(root_idx)
     
@@ -87,7 +87,7 @@ class BKTree:
         last: int
     ) -> int:
         """
-        Recursively build tree node (SPTAG's Kmeans-based splitting).
+        Recursively build tree node with balanced k-means.
         
         Args:
             data: Full dataset
@@ -102,22 +102,32 @@ class BKTree:
         
         # Create leaf node if small enough
         if count <= self.leaf_size:
-            # Pick center as first element
             center_id = indices[first]
             node = BKTNode(centerid=center_id)
             node_idx = len(self.nodes)
             self.nodes.append(node)
             return node_idx
         
-        # K-means clustering
+        # Balanced k-means clustering
         k = min(self.kmeans_k, count)
         subset = data[indices[first:last]]
         
-        # Run k-means
-        labels, centroids = self._kmeans(subset, k)
+        # Use balanced k-means with auto-selected lambda
+        from ..clustering.balanced_kmeans import balanced_kmeans, dynamic_factor_select
+        
+        if self.balance_factor < 0:
+            # Auto-select lambda factor
+            lambda_factor = dynamic_factor_select(subset, k, samples=min(1000, count), metric=self.metric)
+        else:
+            lambda_factor = self.balance_factor
+        
+        labels, centroids = balanced_kmeans(subset, k, lambda_factor, metric=self.metric)
         
         # Find actual center IDs (closest vectors to centroids)
         center_ids = []
+        cluster_starts = []
+        cluster_ends = []
+        
         for i in range(k):
             mask = labels == i
             if not mask.any():
@@ -127,11 +137,21 @@ class BKTree:
             cluster_indices = indices[first:last][mask]
             
             # Find closest to centroid
-            dists = np.sum((cluster_data - centroids[i]) ** 2, axis=1)
+            if self.metric == 'L2':
+                dists = np.sum((cluster_data - centroids[i]) ** 2, axis=1)
+            elif self.metric in ('IP', 'Cosine'):
+                dists = -np.dot(cluster_data, centroids[i])
+            else:
+                dists = np.sum((cluster_data - centroids[i]) ** 2, axis=1)
+            
             closest_idx = np.argmin(dists)
             center_ids.append(cluster_indices[closest_idx])
+            
+            # Track cluster boundaries
+            cluster_starts.append(first + np.where(labels == i)[0][0])
+            cluster_ends.append(first + np.where(labels == i)[0][-1] + 1)
         
-        # Pick first center as this node's center
+        # Create node
         if not center_ids:
             center_id = indices[first]
             node = BKTNode(centerid=center_id)
@@ -146,31 +166,28 @@ class BKTree:
         
         # Recursively build children
         if len(center_ids) > 1:
-            # Assign points to clusters
-            cluster_assignments = [[] for _ in range(k)]
-            for i in range(first, last):
-                vec = data[indices[i]]
-                dists = np.sum((centroids - vec) ** 2, axis=1)
-                cluster_id = np.argmin(dists)
-                cluster_assignments[cluster_id].append(indices[i])
+            # Rearrange indices by cluster
+            sorted_indices = []
+            for i in range(k):
+                mask = labels == i
+                if mask.any():
+                    sorted_indices.extend(indices[first:last][mask])
+            indices[first:last] = sorted_indices
             
             # Build child nodes
-            child_start = len(self.nodes)
-            child_indices = []
+            node.childStart = len(self.nodes)
+            child_start = first
             
-            for cluster_idx in cluster_assignments:
-                if len(cluster_idx) == 0:
+            for i in range(k):
+                mask = labels == i
+                if not mask.any():
                     continue
                 
-                cluster_arr = np.array(cluster_idx)
-                child_node_idx = self._build_node(
-                    data, cluster_arr, 0, len(cluster_arr)
-                )
-                child_indices.append(child_node_idx)
+                child_end = child_start + mask.sum()
+                child_idx = self._build_node(data, indices, child_start, child_end)
+                child_start = child_end
             
-            if child_indices:
-                node.childStart = child_start
-                node.childEnd = len(self.nodes)
+            node.childEnd = len(self.nodes)
         
         return node_idx
     

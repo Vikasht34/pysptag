@@ -34,7 +34,8 @@ class ClusteringAlgorithm(ABC):
         data: np.ndarray,
         centroids: np.ndarray,
         replica_count: int,
-        posting_limit: int
+        posting_limit: int,
+        use_rng_filtering: bool = True
     ) -> Tuple[List[List[int]], np.ndarray]:
         """
         Assign vectors to multiple nearest centroids with posting limits.
@@ -44,6 +45,7 @@ class ClusteringAlgorithm(ABC):
             centroids: (K, D) array of cluster centers
             replica_count: Number of replicas per vector
             posting_limit: Max vectors per posting
+            use_rng_filtering: Use RNG filtering for diverse selection
             
         Returns:
             postings: List of vector indices per centroid

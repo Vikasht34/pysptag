@@ -6,6 +6,27 @@ import numpy as np
 from typing import Tuple
 
 
+def load_fvecs(filename: str) -> np.ndarray:
+    """Load .fvecs file format (SIFT dataset)"""
+    with open(filename, 'rb') as f:
+        # Read dimension
+        dim = np.fromfile(f, dtype=np.int32, count=1)[0]
+        f.seek(0)
+        
+        # Read all vectors
+        data = []
+        while True:
+            d = np.fromfile(f, dtype=np.int32, count=1)
+            if len(d) == 0:
+                break
+            vec = np.fromfile(f, dtype=np.float32, count=d[0])
+            if len(vec) == 0:
+                break
+            data.append(vec)
+        
+        return np.array(data, dtype=np.float32)
+
+
 def load_hdf5_dataset(file_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Load dataset from HDF5 file
