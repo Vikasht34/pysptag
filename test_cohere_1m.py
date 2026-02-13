@@ -20,9 +20,26 @@ data_file = os.path.expanduser('~/pysptag/data/documents-1m.hdf5')
 # Load Cohere 1M from HDF5
 print("\nLoading Cohere 1M dataset...")
 with h5py.File(data_file, 'r') as f:
-    base = f['train'][:]  # or 'ingest' - use train for building
-    queries = f['test'][:100]  # 100 queries
-    groundtruth = f['neighbors'][:100]  # Ground truth neighbors
+    print(f"Keys in file: {list(f.keys())}")
+    
+    # Check structure
+    for key in f.keys():
+        item = f[key]
+        if isinstance(item, h5py.Dataset):
+            print(f"  {key}: Dataset, shape={item.shape}, dtype={item.dtype}")
+        elif isinstance(item, h5py.Group):
+            print(f"  {key}: Group, contains={list(item.keys())}")
+    
+    # Load data based on actual structure
+    if 'train' in f and isinstance(f['train'], h5py.Dataset):
+        base = f['train'][:]
+        queries = f['test'][:100]
+        groundtruth = f['neighbors'][:100]
+    else:
+        # Try alternative structure
+        print("\nTrying alternative structure...")
+        raise ValueError("Unknown HDF5 structure")
+
 print(f"✓ Base: {base.shape}, Queries: {queries.shape}, GT: {groundtruth.shape}")
 
 # Test each quantization level
