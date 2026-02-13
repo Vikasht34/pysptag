@@ -184,15 +184,22 @@ class SPANNRaBitQReplica:
                search_internal_result_num: int = 64, max_check: int = 4096,
                max_vectors_per_posting: int = None):  # None = no limit
         """Search using quantized postings with replication"""
-        # Find nearest centroids (brute force is fast for <1000 centroids)
-        # TODO: Use RNG graph search for 10K+ centroids
-        if self.metric == 'L2':
-            centroid_dists = np.sum((self.centroids - query) ** 2, axis=1)
-        elif self.metric == 'IP':
-            centroid_dists = -np.dot(self.centroids, query)
-        elif self.metric == 'Cosine':
-            centroid_dists = -np.dot(self.centroids, query)
-        nearest_centroids = np.argsort(centroid_dists)[:search_internal_result_num]
+        # Find nearest centroids using BKTree
+        if hasattr(self, 'bktree') and len(self.bktree.tree_roots) > 0:
+            from ..core.bktree_search import bktree_search_centroids
+            nearest_centroids = bktree_search_centroids(
+                query, self.centroids, self.bktree.tree_roots,
+                self.bktree.tree_start, search_internal_result_num, self.metric
+            )
+        else:
+            # Fallback to brute force
+            if self.metric == 'L2':
+                centroid_dists = np.sum((self.centroids - query) ** 2, axis=1)
+            elif self.metric == 'IP':
+                centroid_dists = -np.dot(self.centroids, query)
+            elif self.metric == 'Cosine':
+                centroid_dists = -np.dot(self.centroids, query)
+            nearest_centroids = np.argsort(centroid_dists)[:search_internal_result_num]
         
         # Search postings with deduplication
         seen = set()
