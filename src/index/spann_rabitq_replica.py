@@ -141,7 +141,10 @@ class SPANNRaBitQReplica:
                 
                 # Compute distances for batch: (batch_size, k) - use correct metric
                 if self.metric == 'L2':
-                    dists = np.sum((batch[:, None, :] - centers[None, :, :]) ** 2, axis=2)
+                    # Optimized L2: ||a-b||^2 = ||a||^2 + ||b||^2 - 2*a.b
+                    batch_sq = np.sum(batch ** 2, axis=1, keepdims=True)  # (batch_size, 1)
+                    centers_sq = np.sum(centers ** 2, axis=1, keepdims=True).T  # (1, k)
+                    dists = batch_sq + centers_sq - 2 * np.dot(batch, centers.T)
                 elif self.metric in ('IP', 'Cosine'):
                     dists = -np.dot(batch, centers.T)  # Negative for minimization
                 dists += lambda_penalty * counts[None, :]
@@ -165,7 +168,9 @@ class SPANNRaBitQReplica:
             # Check convergence (L2 distance between old and new centroids)
             diff = np.sum((new_centers - centers) ** 2)
             centers = new_centers
-            if diff < 1e-3:
+            # Adaptive threshold: scale with number of clusters
+            threshold = 1e-3 * k
+            if diff < threshold:
                 print(f"  Converged at iteration {iteration+1}")
                 break
         
