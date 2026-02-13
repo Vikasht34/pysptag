@@ -83,10 +83,19 @@ class RaBitQ:
         l2_norm = residual_norms.squeeze()
         
         ip_bar_o_c = np.sum(bar_o * self.centroid, axis=1)
+        ip_residual_c = np.sum(residuals * self.centroid, axis=1)
         
-        # F_add and F_rescale (same formula for all bit widths!)
-        self.f_add = l2_sqr + 2 * l2_norm * ip_bar_o_c / ip_bar_o_o
-        self.f_rescale = -2 * l2_norm / ip_bar_o_o
+        # Metric-specific F_add and F_rescale
+        if self.metric == 'L2':
+            # L2: F_add = ||o-c||^2 + 2*||o-c|| * <bar_o, c> / <bar_o, o>
+            #     F_rescale = -2*Delta_x / <bar_o, o>
+            self.f_add = l2_sqr + 2 * l2_norm * ip_bar_o_c / ip_bar_o_o
+            self.f_rescale = -2 * l2_norm / ip_bar_o_o
+        elif self.metric in ('IP', 'Cosine'):
+            # IP: F_add = -<o-c, c> + ||o-c|| * <bar_o, c> / <bar_o, o>
+            #     F_rescale = -Delta_x / <bar_o, o>
+            self.f_add = -ip_residual_c + l2_norm * ip_bar_o_c / ip_bar_o_o
+            self.f_rescale = -l2_norm / ip_bar_o_o
         
         return codes
     
@@ -104,9 +113,11 @@ class RaBitQ:
         
         # Metric-specific G_add computation
         if self.metric == 'L2':
+            # L2: G_add = ||q - c||^2
             G_add = np.sum(q_residual ** 2)
         elif self.metric in ('IP', 'Cosine'):
-            G_add = 1 - np.dot(q_residual, self.centroid)
+            # IP/Cosine: G_add = -<q, c>
+            G_add = -np.dot(query, self.centroid)
         
         # RaBitQ distance estimation (same formula for 1-bit, 2-bit, 4-bit!)
         estimated_dist = self.f_add + G_add + self.f_rescale * ip_x0_qr
