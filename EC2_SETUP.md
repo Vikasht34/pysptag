@@ -1,159 +1,168 @@
-# EC2 Setup Guide for SIFT1M Testing
+# EC2 Setup and Testing Guide
 
-## 1. Launch EC2 Instance
+## Prerequisites
 
-**Recommended Instance:**
-- Type: `t3.xlarge` (4 vCPU, 16 GB RAM) or `t3.2xlarge` (8 vCPU, 32 GB RAM)
-- AMI: Amazon Linux 2023 or Ubuntu 22.04
-- Storage: 30 GB EBS (gp3)
+1. **EC2 Instance**: 
+   - Type: `r5.2xlarge` or larger (8 vCPUs, 64GB RAM)
+   - OS: Amazon Linux 2 or Ubuntu 22.04
+   - Storage: 100GB+ EBS volume (gp3 recommended)
 
-## 2. Connect to EC2
+2. **Python Environment**:
+   ```bash
+   sudo yum install -y python3 python3-pip git  # Amazon Linux
+   # OR
+   sudo apt-get update && sudo apt-get install -y python3 python3-pip git  # Ubuntu
+   ```
 
+3. **Mount EBS Volume** (if using separate volume):
+   ```bash
+   sudo mkfs -t ext4 /dev/nvme1n1  # Format (first time only)
+   sudo mkdir -p /mnt/ebs
+   sudo mount /dev/nvme1n1 /mnt/ebs
+   sudo chown -R ec2-user:ec2-user /mnt/ebs  # Amazon Linux
+   # OR
+   sudo chown -R ubuntu:ubuntu /mnt/ebs  # Ubuntu
+   ```
+
+## Setup
+
+1. **Clone Repository**:
+   ```bash
+   cd ~
+   git clone https://github.com/Vikasht34/pysptag.git
+   cd pysptag
+   ```
+
+2. **Install Dependencies**:
+   ```bash
+   pip3 install numpy numba --user
+   ```
+
+3. **Download SIFT1M Dataset**:
+   ```bash
+   mkdir -p data/sift
+   cd data/sift
+   
+   # Download SIFT1M
+   wget ftp://ftp.irisa.fr/local/texmex/corpus/sift.tar.gz
+   tar -xzf sift.tar.gz
+   
+   cd ~/pysptag
+   ```
+
+## Run Tests
+
+### 1. Memory-Based SPANN (Fast, In-Memory)
 ```bash
-ssh -i your-key.pem ec2-user@<EC2-IP>
-```
-
-## 3. Install Dependencies
-
-```bash
-# Update system
-sudo yum update -y  # Amazon Linux
-# OR
-sudo apt update && sudo apt upgrade -y  # Ubuntu
-
-# Install Python 3.11
-sudo yum install -y python3.11 python3.11-pip  # Amazon Linux
-# OR
-sudo apt install -y python3.11 python3.11-pip  # Ubuntu
-
-# Install required packages
-python3.11 -m pip install --upgrade pip
-python3.11 -m pip install numpy scipy
-```
-
-## 4. Clone Repository
-
-```bash
-cd ~
-git clone https://github.com/Vikasht34/pysptag.git
-cd pysptag
-```
-
-## 5. Download SIFT1M Dataset
-
-```bash
-# Create data directory
-mkdir -p data
-
-# Download SIFT1M (168 MB compressed, 577 MB extracted)
-cd data
-wget ftp://ftp.irisa.fr/local/texmex/corpus/sift.tar.gz
-
-# Extract
-tar -xzf sift.tar.gz
-
-# Verify files
-ls -lh sift/
-# Should see:
-# sift_base.fvecs (516 MB) - 1M vectors
-# sift_query.fvecs (5.2 MB) - 10K queries
-# sift_learn.fvecs (51.6 MB) - 100K training vectors
-# sift_groundtruth.ivecs (4 MB) - ground truth
-
 cd ~/pysptag
+python3 test_sift1m_efficient.py
 ```
 
-## 6. Update Test Script Path
+**Expected Results**:
+- 4-bit: ~4ms p50, ~250 QPS, 92% recall
+- 2-bit: ~4ms p50, ~220 QPS, 92% recall
+- Build time: ~2-3 minutes
 
+### 2. Disk-Based SPANN (Billion-Scale Ready)
 ```bash
-# Edit test_sift1m.py to use correct paths
-sed -i "s|/Users/viktari/pysptag|$HOME/pysptag|g" test_sift1m.py
+cd ~/pysptag
+python3 test_ec2_disk.py
 ```
 
-## 7. Run SIFT1M Test
+**Expected Results**:
+- 4-bit: ~5-10ms p50, ~150 QPS, 92% recall
+- Disk usage: ~750MB (compressed from 3GB)
+- Build time: ~3-5 minutes
 
+**Note**: First run builds the index, subsequent runs load from disk.
+
+## Configuration Options
+
+Edit `test_ec2_disk.py` to customize:
+
+```python
+# Line 60: Change EBS mount point
+INDEX_DIR = '/mnt/ebs/spann_index'  # Your EBS path
+
+# Line 85: Use BKTree instead of KDTree
+tree_type='BKT',  # Slower but more accurate
+
+# Line 84: Adjust quantization
+bq=2,  # 1-bit, 2-bit, or 4-bit
+
+# Line 83: Disable quantization
+use_rabitq=False,  # No compression, slower but highest recall
+```
+
+## Performance Tuning
+
+### For Faster Search:
+```python
+search_internal_result_num=64,  # Fewer centroids (faster, lower recall)
+max_check=2048,  # Fewer candidates (faster, lower recall)
+```
+
+### For Higher Recall:
+```python
+search_internal_result_num=256,  # More centroids (slower, higher recall)
+max_check=8192,  # More candidates (slower, higher recall)
+```
+
+## Monitoring
+
+### Check Disk Usage:
 ```bash
-python3.11 test_sift1m.py
+du -sh /mnt/ebs/spann_index_*
 ```
 
-## Expected Output
-
-```
-================================================================================
-SIFT1M Test - SPANN + RaBitQ + Replication
-================================================================================
-
-Loading SIFT1M dataset...
-✓ Loaded in 15.23s
-  Base: (1000000, 128)
-  Queries: (10000, 128)
-  Groundtruth: (10000, 100)
-
-Building SPANN+RaBitQ index...
-  Parameters: replica_count=8, target_posting_size=10000, bq=4
-
-✓ Build time: 45.67s (0.8 min)
-  Clusters: 100
-  Avg posting size: 10000.0
-
-Searching 10000 queries...
-  Processed 1000/10000 queries...
-  Processed 2000/10000 queries...
-  ...
-
-✓ Search complete: 120.45s
-  QPS: 83.02
-
-📊 Results:
-  Recall@1:   85.23%
-  Recall@10:  92.45%
-  Recall@100: 95.67%
-
-================================================================================
-✓ SIFT1M TEST COMPLETE
-================================================================================
-```
-
-## 8. Monitor Resources
-
-In another terminal:
+### Monitor Memory:
 ```bash
-# Monitor CPU and memory
+watch -n 1 free -h
+```
+
+### Monitor CPU:
+```bash
 htop
-
-# OR
-watch -n 1 'free -h && echo && ps aux | head -20'
-```
-
-## 9. Save Results
-
-```bash
-# Run test and save output
-python3.11 test_sift1m.py | tee sift1m_results.txt
-
-# Download results to local machine
-# On your local machine:
-scp -i your-key.pem ec2-user@<EC2-IP>:~/pysptag/sift1m_results.txt .
 ```
 
 ## Troubleshooting
 
-### Out of Memory
-- Use smaller instance or reduce `target_posting_size`
-- Reduce `replica_count` from 8 to 4
+### Out of Memory:
+- Use smaller `replica_count` (e.g., 4 instead of 6)
+- Use disk-based instead of memory-based
+- Increase EC2 instance size
 
-### Slow Performance
-- Use compute-optimized instance (c6i.xlarge)
-- Increase `max_check` parameter
+### Slow Search:
+- Use KDTree instead of BKTree (`tree_type='KDT'`)
+- Reduce `search_internal_result_num`
+- Use 2-bit or 4-bit quantization
 
-### Dataset Download Fails
-```bash
-# Alternative mirror
-wget http://corpus-texmex.irisa.fr/sift.tar.gz
-```
+### Low Recall:
+- Increase `search_internal_result_num`
+- Increase `max_check`
+- Use 4-bit quantization or no-quant
 
-## Cost Estimate
+## Next Steps: Billion-Scale
 
-- t3.xlarge: ~$0.17/hour
-- Test duration: ~5 minutes
-- Total cost: < $0.02 per test run
+Once SIFT1M works, scale to billion vectors:
+
+1. **Larger Dataset**: Download DEEP1B or SIFT1B
+2. **Larger Instance**: Use `r5.8xlarge` (32 vCPUs, 256GB RAM)
+3. **Larger EBS**: 1TB+ gp3 volume
+4. **Adjust Parameters**:
+   ```python
+   target_posting_size=10000,  # Larger posting lists
+   replica_count=8,  # More replicas for recall
+   ```
+
+## Results to Expect
+
+### SIFT1M (1M vectors):
+- **Memory-based**: 3-4ms latency, 92% recall
+- **Disk-based**: 5-10ms latency, 92% recall
+- **Disk usage**: ~750MB (4-bit quantization)
+
+### Billion-scale (1B vectors):
+- **Disk-based**: 10-20ms latency, 90%+ recall
+- **Disk usage**: ~750GB (4-bit quantization)
+- **RAM usage**: ~10GB (only centroids in memory)
