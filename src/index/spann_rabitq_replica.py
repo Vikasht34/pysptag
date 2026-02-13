@@ -7,7 +7,7 @@ import numpy as np
 from typing import Tuple, Optional, Literal
 from ..core.bktree import BKTree
 from ..core.rng import RNG, MetricType
-from ..quantization.rabitq import RaBitQ
+from ..quantization.rabitq_numba import RaBitQNumba
 
 
 class SPANNRaBitQReplica:
@@ -91,7 +91,7 @@ class SPANNRaBitQReplica:
             
             if self.use_rabitq:
                 # Quantize this posting
-                rabitq = RaBitQ(dim=self.dim, bq=self.bq, metric=self.metric)
+                rabitq = RaBitQNumba(dim=self.dim, bq=self.bq, metric=self.metric)
                 codes = rabitq.build(posting_vecs)
                 
                 self.posting_rabitqs.append(rabitq)
@@ -209,7 +209,7 @@ class SPANNRaBitQReplica:
             
             if self.use_rabitq:
                 # Use RaBitQ for fast filtering (distances not comparable across postings)
-                _, local_indices = rabitq.search(query, codes, None, k=search_k)
+                _, local_indices = rabitq.search(query, codes, k=search_k)
             else:
                 # Direct distance computation (codes = original vectors) - use correct metric
                 if self.metric == 'L2':

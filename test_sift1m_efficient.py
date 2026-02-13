@@ -110,8 +110,8 @@ for config in [('1-bit', 1, True), ('2-bit', 2, True), ('4-bit', 4, True), ('no-
         posting_vecs = base[posting_ids]
         
         if use_rabitq:
-            from src.quantization.rabitq import RaBitQ
-            rabitq = RaBitQ(dim=128, bq=bq, metric='L2')
+            from src.quantization.rabitq_numba import RaBitQNumba
+            rabitq = RaBitQNumba(dim=128, bq=bq, metric='L2')
             codes = rabitq.build(posting_vecs)
             index.posting_rabitqs.append(rabitq)
             index.posting_codes.append(codes)
