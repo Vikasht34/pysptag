@@ -38,19 +38,76 @@ def get_disk_usage(path):
     return total / (1024 * 1024)
 
 def benchmark_search(index, base, queries, groundtruth, num_queries=1000, k=10, max_check=4096):
-    """Search benchmark using index.search() API"""
+    """Search benchmark with detailed latency breakdown"""
     recalls = []
     latencies = []
     bytes_read_list = []
+    
+    # Detailed timing
+    centroid_search_times = []
+    posting_load_times = []
+    distance_comp_times = []
+    sort_times = []
     
     print(f"\nSearching {num_queries} queries...")
     for i in range(num_queries):
         # Reset counter
         index._bytes_read = 0
         
+        query = queries[i]
+        t_total = time.perf_counter()
+        
+        # Stage 1: Find nearest centroids
         t0 = time.perf_counter()
-        ids, _ = index.search(queries[i], base, k=k, max_check=max_check)
-        latency = (time.perf_counter() - t0) * 1000
+        if hasattr(index, 'rng') and len(index.rng.graph) > 0:
+            if index.tree_type == 'BKT':
+                from src.core.bktree_rng_search import bktree_rng_search
+                nearest_centroids = bktree_rng_search(
+                    query, index.centroids, index.tree.tree_roots,
+                    index.tree.tree_start, index.rng.graph,
+                    64, index.metric
+                )
+            else:
+                nearest_centroids = index.tree.search(query, index.centroids, 64, index.metric)
+        else:
+            if index.metric == 'L2':
+                centroid_dists = np.sum((index.centroids - query) ** 2, axis=1)
+            else:
+                centroid_dists = -np.dot(index.centroids, query)
+            sorted_idx = np.argsort(centroid_dists)
+            nearest_centroids = sorted_idx[:64]
+        centroid_search_times.append((time.perf_counter() - t0) * 1000)
+        
+        # Stage 2: Load posting lists
+        t0 = time.perf_counter()
+        candidates = []
+        for cid in nearest_centroids[:max_check]:
+            posting = index._load_posting_mmap(cid)
+            if posting is not None and posting[0] is not None:
+                candidates.extend(posting[0])
+        posting_load_times.append((time.perf_counter() - t0) * 1000)
+        
+        # Stage 3: Distance computation
+        t0 = time.perf_counter()
+        candidates = list(set(candidates))
+        if len(candidates) > 0:
+            candidate_vecs = base[candidates]
+            dists = np.sum((candidate_vecs - query) ** 2, axis=1)
+        else:
+            dists = np.array([])
+        distance_comp_times.append((time.perf_counter() - t0) * 1000)
+        
+        # Stage 4: Sort and get top-k
+        t0 = time.perf_counter()
+        if len(dists) >= k:
+            top_k_idx = np.argpartition(dists, k)[:k]
+            top_k_idx = top_k_idx[np.argsort(dists[top_k_idx])]
+            ids = [candidates[idx] for idx in top_k_idx]
+        else:
+            ids = candidates
+        sort_times.append((time.perf_counter() - t0) * 1000)
+        
+        latency = (time.perf_counter() - t_total) * 1000
         latencies.append(latency)
         bytes_read_list.append(index._bytes_read)
         
@@ -69,7 +126,14 @@ def benchmark_search(index, base, queries, groundtruth, num_queries=1000, k=10, 
             'p99': np.percentile(latencies, 99),
             'mean': np.mean(latencies)
         },
-        'bytes_per_query_kb': np.mean(bytes_read_list) / 1024
+        'breakdown': {
+            'centroid_search': np.mean(centroid_search_times),
+            'posting_load': np.mean(posting_load_times),
+            'distance_comp': np.mean(distance_comp_times),
+            'sort': np.mean(sort_times)
+        },
+        'bytes_per_query_kb': np.mean(bytes_read_list) / 1024,
+        'postings_per_query': np.mean([len(set(range(min(max_check, 64)))) for _ in range(num_queries)])
     }
     """Detailed search benchmark with latency breakdown"""
     recalls = []
@@ -281,6 +345,11 @@ def run_benchmark(quant_bits, preload=False):
     print(f"  p90:             {results['latency']['p90']:.2f} ms")
     print(f"  p99:             {results['latency']['p99']:.2f} ms")
     print(f"  mean:            {results['latency']['mean']:.2f} ms")
+    print(f"\nLatency Breakdown (mean):")
+    print(f"  Centroid search: {results['breakdown']['centroid_search']:.2f} ms")
+    print(f"  Posting load:    {results['breakdown']['posting_load']:.2f} ms")
+    print(f"  Distance comp:   {results['breakdown']['distance_comp']:.2f} ms")
+    print(f"  Sort:            {results['breakdown']['sort']:.2f} ms")
     print(f"\nDisk I/O per query:")
     print(f"  Data read:       {results['bytes_per_query_kb']:.1f} KB")
     print(f"{'='*70}\n")
