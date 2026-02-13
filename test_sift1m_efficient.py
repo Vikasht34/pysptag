@@ -61,7 +61,8 @@ base_index = SPANNRaBitQReplica(
     target_posting_size=5000,
     replica_count=6,
     bq=4,
-    use_rabitq=True
+    use_rabitq=True,
+    tree_type='KDT'  # Use KDTree for speed
 )
 base_index.build(base)
 cluster_time = time.time() - t0
@@ -88,7 +89,8 @@ for config in [('1-bit', 1, True), ('2-bit', 2, True), ('4-bit', 4, True), ('no-
         target_posting_size=5000,
         replica_count=6,
         bq=bq,
-        use_rabitq=use_rabitq
+        use_rabitq=use_rabitq,
+        tree_type='KDT'  # Use KDTree
     )
     
     # Reuse clustering from base_index
@@ -120,11 +122,11 @@ for config in [('1-bit', 1, True), ('2-bit', 2, True), ('4-bit', 4, True), ('no-
             index.posting_rabitqs.append(None)
             index.posting_codes.append(posting_vecs)
     
-    # Build BKTree+RNG on centroids
-    from src.core.bktree import BKTree
+    # Build tree+RNG on centroids
+    from src.core.kdtree import KDTree
     from src.core.rng import RNG
-    index.bktree = BKTree(num_trees=1, kmeans_k=32)
-    index.bktree.build(centroids)
+    index.tree = KDTree(num_trees=1)
+    index.tree.build(centroids)
     index.rng = RNG(neighborhood_size=32, metric='L2')
     index.rng.build(centroids)
     
