@@ -32,6 +32,33 @@ def get_disk_usage(path):
     return total / (1024 * 1024)
 
 def benchmark_search(index, base, queries, groundtruth, num_queries=1000, k=10, max_check=4096):
+    """Search benchmark using index.search() API"""
+    recalls = []
+    latencies = []
+    
+    print(f"\nSearching {num_queries} queries...")
+    for i in range(num_queries):
+        t0 = time.perf_counter()
+        ids, _ = index.search(queries[i], base, k=k, max_check=max_check)
+        latency = (time.perf_counter() - t0) * 1000
+        latencies.append(latency)
+        
+        # Recall
+        recall = len(set(ids) & set(int(x) for x in groundtruth[i][:k])) / k
+        recalls.append(recall)
+        
+        if (i + 1) % 100 == 0:
+            print(f"  {i+1}/{num_queries} queries done")
+    
+    return {
+        'recall': np.mean(recalls) * 100,
+        'latency': {
+            'p50': np.percentile(latencies, 50),
+            'p90': np.percentile(latencies, 90),
+            'p99': np.percentile(latencies, 99),
+            'mean': np.mean(latencies)
+        }
+    }
     """Detailed search benchmark with latency breakdown"""
     recalls = []
     
@@ -235,21 +262,11 @@ def run_benchmark(quant_bits, preload=False):
     print(f"Disk usage:        {disk_mb:.1f} MB")
     print(f"Clusters:          {index.num_clusters}")
     print(f"\nRecall@10:         {results['recall']:.2f}%")
-    print(f"\nTotal Latency:")
-    print(f"  p50:             {results['total_latency']['p50']:.2f} ms")
-    print(f"  p90:             {results['total_latency']['p90']:.2f} ms")
-    print(f"  p99:             {results['total_latency']['p99']:.2f} ms")
-    print(f"  mean:            {results['total_latency']['mean']:.2f} ms")
-    print(f"\nLatency Breakdown:")
-    print(f"  Fetch (p50/p99): {results['fetch_latency']['p50']:.2f} / {results['fetch_latency']['p99']:.2f} ms")
-    print(f"  Dist  (p50/p99): {results['distance_latency']['p50']:.2f} / {results['distance_latency']['p99']:.2f} ms")
-    if results['rerank_latency']['mean'] > 0.01:
-        print(f"  Rerank(p50/p99): {results['rerank_latency']['p50']:.2f} / {results['rerank_latency']['p99']:.2f} ms")
-    else:
-        print(f"  Rerank:          N/A (full precision)")
-    print(f"\nDisk I/O per query:")
-    print(f"  Data read:       {results['disk_io']['bytes_per_query_kb']:.1f} KB")
-    print(f"  Postings:        {results['disk_io']['postings_accessed']:.0f}")
+    print(f"\nLatency:")
+    print(f"  p50:             {results['latency']['p50']:.2f} ms")
+    print(f"  p90:             {results['latency']['p90']:.2f} ms")
+    print(f"  p99:             {results['latency']['p99']:.2f} ms")
+    print(f"  mean:            {results['latency']['mean']:.2f} ms")
     print(f"{'='*70}\n")
     
     return results
@@ -274,9 +291,9 @@ if __name__ == '__main__':
     print("\n" + "="*70)
     print("SUMMARY COMPARISON")
     print("="*70)
-    print(f"{'Config':<12} {'Recall':<10} {'p50 (ms)':<12} {'p99 (ms)':<12} {'Disk I/O (KB)':<15}")
+    print(f"{'Config':<12} {'Recall':<10} {'p50 (ms)':<12} {'p99 (ms)':<12}")
     print("-"*70)
     for key, res in all_results.items():
-        print(f"{key:<12} {res['recall']:>6.2f}%   {res['total_latency']['p50']:>8.2f}     "
-              f"{res['total_latency']['p99']:>8.2f}     {res['disk_io']['bytes_per_query_kb']:>10.1f}")
+        print(f"{key:<12} {res['recall']:>6.2f}%   {res['latency']['p50']:>8.2f}     "
+              f"{res['latency']['p99']:>8.2f}")
     print("="*70)
