@@ -61,13 +61,9 @@ def benchmark_search(index, base, queries, groundtruth, num_queries=1000, k=10, 
         
         # Stage 1: Fetch posting lists
         t0 = time.perf_counter()
-        # Get top clusters from head index
-        if hasattr(index, 'rng') and index.rng is not None:
-            _, cluster_ids = index.rng.search(query.reshape(1, -1).astype(np.float32), max_check)
-            cluster_ids = cluster_ids[0]
-        else:
-            dists = np.sum((query - index.centroids) ** 2, axis=1)
-            cluster_ids = np.argpartition(dists, max_check)[:max_check]
+        # Get top clusters from centroids
+        dists = np.sum((query - index.centroids) ** 2, axis=1)
+        cluster_ids = np.argpartition(dists, min(max_check, len(dists)-1))[:max_check]
         
         # Load postings
         candidates = []
