@@ -224,6 +224,7 @@ class SPANNRaBitQReplica:
         # Search postings with deduplication
         seen = set()
         all_indices = []
+        all_dists = []  # Track distances for no-quant case
         
         for centroid_id in nearest_centroids:
             posting_ids = self.posting_lists[centroid_id]
@@ -243,6 +244,7 @@ class SPANNRaBitQReplica:
             if self.use_rabitq:
                 # Use RaBitQ for fast filtering (distances not comparable across postings)
                 _, local_indices = rabitq.search(query, codes, k=search_k)
+                local_dists = None  # Need reranking
             else:
                 # Direct distance computation (codes = original vectors) - use correct metric
                 if self.metric == 'L2':
@@ -252,13 +254,16 @@ class SPANNRaBitQReplica:
                 elif self.metric == 'Cosine':
                     dists = -np.dot(codes, query)
                 local_indices = np.argsort(dists)[:search_k]
+                local_dists = dists[local_indices]  # Save true distances
             
             # Map to global IDs and deduplicate
-            for local_idx in local_indices:
+            for idx, local_idx in enumerate(local_indices):
                 global_id = posting_ids[local_idx]
                 if global_id not in seen:
                     seen.add(global_id)
                     all_indices.append(global_id)
+                    if local_dists is not None:
+                        all_dists.append(local_dists[idx])
                     
                     if len(all_indices) >= max_check:
                         break
@@ -266,17 +271,24 @@ class SPANNRaBitQReplica:
             if len(all_indices) >= max_check:
                 break
         
-        # Rerank with true distances - use correct metric
+        # Rerank with true distances (skip if we already have them)
         if len(all_indices) == 0:
             return np.array([]), np.array([])
         
         all_indices = np.array(all_indices)
-        if self.metric == 'L2':
-            true_dists = np.sum((data[all_indices] - query) ** 2, axis=1)
-        elif self.metric == 'IP':
-            true_dists = -np.dot(data[all_indices], query)
-        elif self.metric == 'Cosine':
-            true_dists = -np.dot(data[all_indices], query)
-        top_k_idx = np.argsort(true_dists)[:k]
+        
+        if self.use_rabitq:
+            # Need to rerank with true distances
+            if self.metric == 'L2':
+                true_dists = np.sum((data[all_indices] - query) ** 2, axis=1)
+            elif self.metric == 'IP':
+                true_dists = -np.dot(data[all_indices], query)
+            elif self.metric == 'Cosine':
+                true_dists = -np.dot(data[all_indices], query)
+            top_k_idx = np.argsort(true_dists)[:k]
+        else:
+            # Already have true distances from no-quant search
+            true_dists = np.array(all_dists)
+            top_k_idx = np.argsort(true_dists)[:k]
         
         return true_dists[top_k_idx], all_indices[top_k_idx]
