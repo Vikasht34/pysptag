@@ -38,41 +38,55 @@
    pip3 install numpy numba --user
    ```
 
-3. **Download SIFT1M Dataset**:
+3. **Download Datasets**:
+
+   **SIFT1M** (128-dim, L2):
    ```bash
    mkdir -p data/sift
    cd data/sift
-   
-   # Download SIFT1M
    wget ftp://ftp.irisa.fr/local/texmex/corpus/sift.tar.gz
    tar -xzf sift.tar.gz
-   
    cd ~/pysptag
+   ```
+
+   **Cohere 1M** (768-dim, Cosine):
+   ```bash
+   cd ~/pysptag
+   wget https://ann-benchmarks.com/cohere-wikipedia-768-angular.hdf5
    ```
 
 ## Run Tests
 
-### 1. Memory-Based SPANN (Fast, In-Memory)
+### 1. SIFT1M (128-dim, L2 distance)
+
+**Memory-Based** (Fast, In-Memory):
 ```bash
 cd ~/pysptag
 python3 test_sift1m_efficient.py
 ```
 
-**Expected Results**:
-- 4-bit: ~4ms p50, ~250 QPS, 92% recall
-- 2-bit: ~4ms p50, ~220 QPS, 92% recall
-- Build time: ~2-3 minutes
-
-### 2. Disk-Based SPANN (Billion-Scale Ready)
+**Disk-Based** (Billion-Scale Ready):
 ```bash
 cd ~/pysptag
 python3 test_ec2_disk.py
 ```
 
 **Expected Results**:
-- 4-bit: ~5-10ms p50, ~150 QPS, 92% recall
+- 4-bit: ~4ms p50, ~250 QPS, 92% recall
 - Disk usage: ~750MB (compressed from 3GB)
-- Build time: ~3-5 minutes
+
+### 2. Cohere 1M (768-dim, Cosine similarity)
+
+**Disk-Based**:
+```bash
+cd ~/pysptag
+python3 test_ec2_cohere.py
+```
+
+**Expected Results**:
+- 4-bit: ~10-15ms p50, ~100 QPS, 90%+ recall
+- Disk usage: ~4.5GB (compressed from 18GB)
+- Higher latency due to 768-dim vs 128-dim
 
 **Note**: First run builds the index, subsequent runs load from disk.
 
