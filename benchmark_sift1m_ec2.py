@@ -59,6 +59,9 @@ def benchmark_search(index, base, queries, groundtruth, num_queries=1000, k=10, 
         
         # Stage 1: Find nearest centroids
         t0 = time.perf_counter()
+        if i == 0:  # Debug first query
+            print(f"  DEBUG: hasattr rng={hasattr(index, 'rng')}, graph len={len(index.rng.graph) if hasattr(index, 'rng') else 0}")
+        
         if hasattr(index, 'rng') and len(index.rng.graph) > 0:
             if index.tree_type == 'BKT':
                 from src.core.bktree_rng_search import bktree_rng_search
