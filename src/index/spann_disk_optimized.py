@@ -219,12 +219,22 @@ class SPANNDiskOptimized:
                 f.write(struct.pack('I', len(rabitq_bytes)))
                 f.write(rabitq_bytes)
     
-    def _load_posting_mmap(self, centroid_id: int):
-        """Load posting with memory-mapped file (zero-copy)"""
+    def _load_posting_mmap(self, centroid_id: int, max_vectors: int = None):
+        """Load posting with memory-mapped file (zero-copy)
+        
+        Args:
+            centroid_id: Cluster ID
+            max_vectors: Maximum vectors to load (None = load all)
+        """
         # Check cache first
         if centroid_id in self._posting_cache:
             self._cache_hits += 1
-            return self._posting_cache[centroid_id]
+            cached = self._posting_cache[centroid_id]
+            if max_vectors is None:
+                return cached
+            # Return limited version
+            return (cached[0][:max_vectors] if cached[0] is not None else None, 
+                    cached[1], cached[2])
         
         self._cache_misses += 1
         
@@ -232,13 +242,21 @@ class SPANNDiskOptimized:
         if not os.path.exists(posting_file):
             return None, None, None
         
-        # Track bytes read
-        file_size = os.path.getsize(posting_file)
-        self._bytes_read += file_size
-        
         with open(posting_file, 'rb') as f:
             # Read header
             num_vecs, code_dim, is_unquantized = struct.unpack('III', f.read(12))
+            
+            # Limit vectors to load
+            if max_vectors is not None:
+                num_vecs = min(num_vecs, max_vectors)
+            
+            # Track bytes read (only what we actually read)
+            bytes_to_read = 12 + num_vecs * 4  # Header + IDs
+            if is_unquantized:
+                bytes_to_read += num_vecs * code_dim * 4  # Float32 codes
+            else:
+                bytes_to_read += num_vecs * code_dim  # Uint8 codes
+            self._bytes_read += bytes_to_read
             
             # Memory-map the data section
             mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
@@ -273,22 +291,30 @@ class SPANNDiskOptimized:
         self._posting_cache[centroid_id] = (posting_ids.copy(), codes.copy(), rabitq)
         return self._posting_cache[centroid_id]
     
-    def _load_postings_batch(self, centroid_ids: list):
-        """Batch load multiple postings"""
+    def _load_postings_batch(self, centroid_ids: list, max_vectors_per_posting: int = 200):
+        """Batch load multiple postings with vector limit (SPTAG-style)
+        
+        Args:
+            centroid_ids: List of cluster IDs
+            max_vectors_per_posting: Max vectors to load per posting (default 200, SPTAG default)
+        """
         postings = {}
         uncached = []
         
         # Check cache first
         for cid in centroid_ids:
             if cid in self._posting_cache:
-                postings[cid] = self._posting_cache[cid]
+                cached = self._posting_cache[cid]
+                # Apply limit to cached results
+                postings[cid] = (cached[0][:max_vectors_per_posting] if cached[0] is not None else None,
+                                cached[1], cached[2])
                 self._cache_hits += 1
             else:
                 uncached.append(cid)
         
-        # Load uncached in batch
+        # Load uncached in batch with limit
         for cid in uncached:
-            result = self._load_posting_mmap(cid)
+            result = self._load_posting_mmap(cid, max_vectors=max_vectors_per_posting)
             if result[0] is not None:
                 postings[cid] = result
         

@@ -98,10 +98,11 @@ for i in range(num_queries):
     # === STAGE 2: Load Posting Lists ===
     t0 = time.perf_counter()
     candidates = []
+    max_vectors_per_posting = 200  # SPTAG default
     for cid in nearest_centroids[:min(max_check, len(nearest_centroids))]:
-        posting = index._load_posting_mmap(cid)
+        posting = index._load_posting_mmap(cid, max_vectors=max_vectors_per_posting)
         if posting is not None and posting[0] is not None:
-            candidates.extend(posting[0])  # Load ALL vectors
+            candidates.extend(posting[0])
     t_posting = (time.perf_counter() - t0) * 1000
     
     # === STAGE 3: Distance Computation ===
