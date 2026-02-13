@@ -118,7 +118,7 @@ def benchmark_search(index, base, queries, groundtruth, num_queries=1000, k=10, 
         postings_accessed.append(len(cluster_ids))
         
         # Recall
-        recall = len(set(result_ids) & set(groundtruth[i][:k])) / k
+        recall = len(set(result_ids) & set(int(x) for x in groundtruth[i][:k])) / k
         recalls.append(recall)
         
         if (i + 1) % 100 == 0:
