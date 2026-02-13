@@ -154,16 +154,27 @@ class SPANNDiskOptimized:
         self.tree.build(self.centroids)
         
         # Build initial graph from tree search
-        print(f"  Building initial RNG graph from {self.tree_type}...")
+        print(f"  Building initial RNG graph using k-NN...")
+        import faiss
+        # Use faiss for fast k-NN (much faster than tree search)
+        index_knn = faiss.IndexFlatL2(self.centroids.shape[1])
+        index_knn.add(self.centroids.astype(np.float32))
+        
         init_graph = []
-        for i in range(len(self.centroids)):
-            if self.tree_type == 'BKT':
-                _, neighbors = self.tree.search(self.centroids[i], self.centroids, 
-                                               self.rng.neighborhood_size, max_check=-1)
-            else:
-                neighbors = self.tree.search(self.centroids[i], self.centroids,
-                                            self.rng.neighborhood_size)
-            init_graph.append(neighbors)
+        batch_size = 1000
+        for i in range(0, len(self.centroids), batch_size):
+            end = min(i + batch_size, len(self.centroids))
+            batch = self.centroids[i:end].astype(np.float32)
+            # Search for k+1 neighbors (includes self)
+            _, neighbors = index_knn.search(batch, self.rng.neighborhood_size + 1)
+            # Remove self from neighbors
+            for j, neighb in enumerate(neighbors):
+                # Filter out self (distance 0)
+                filtered = neighb[neighb != (i + j)][:self.rng.neighborhood_size]
+                init_graph.append(filtered)
+            
+            if (i + batch_size) % 5000 == 0:
+                print(f"    Processed {min(i + batch_size, len(self.centroids))}/{len(self.centroids)} centroids")
         
         self.rng.build(self.centroids, init_graph=init_graph)
         
