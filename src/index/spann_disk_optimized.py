@@ -313,11 +313,12 @@ class SPANNDiskOptimized:
         data: np.ndarray,
         k: int = 10,
         search_internal_result_num: int = 64,
-        max_check: int = 4096
+        max_check: int = 4096,
+        max_dist_ratio: float = 10000.0
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Optimized search with batch loading"""
+        """Optimized search with distance-based centroid filtering"""
         
-        # Find nearest centroids
+        # Find nearest centroids with distances
         if hasattr(self, 'rng') and len(self.rng.graph) > 0:
             if self.tree_type == 'BKT':
                 from ..core.bktree_rng_search import bktree_rng_search
@@ -326,16 +327,42 @@ class SPANNDiskOptimized:
                     self.tree.tree_start, self.rng.graph,
                     search_internal_result_num, self.metric
                 )
+                # Compute distances for filtering
+                if self.metric == 'L2':
+                    centroid_dists = np.sum((self.centroids[nearest_centroids] - query) ** 2, axis=1)
+                elif self.metric in ('IP', 'Cosine'):
+                    centroid_dists = -np.dot(self.centroids[nearest_centroids], query)
             else:  # KDT
                 nearest_centroids = self.tree.search(
                     query, self.centroids, search_internal_result_num, self.metric
                 )
+                # Compute distances for filtering
+                if self.metric == 'L2':
+                    centroid_dists = np.sum((self.centroids[nearest_centroids] - query) ** 2, axis=1)
+                elif self.metric in ('IP', 'Cosine'):
+                    centroid_dists = -np.dot(self.centroids[nearest_centroids], query)
         else:
             if self.metric == 'L2':
                 centroid_dists = np.sum((self.centroids - query) ** 2, axis=1)
             elif self.metric in ('IP', 'Cosine'):
                 centroid_dists = -np.dot(self.centroids, query)
-            nearest_centroids = np.argsort(centroid_dists)[:search_internal_result_num]
+            sorted_idx = np.argsort(centroid_dists)
+            nearest_centroids = sorted_idx[:search_internal_result_num]
+            centroid_dists = centroid_dists[sorted_idx[:search_internal_result_num]]
+        
+        # SPTAG-style distance filtering: limitDist = first_dist * maxDistRatio
+        limit_dist = centroid_dists[0] * max_dist_ratio
+        
+        # Filter centroids: stop if distance > limitDist (and limitDist > 0.1)
+        valid_count = search_internal_result_num
+        if limit_dist > 0.1:
+            for i in range(len(centroid_dists)):
+                if centroid_dists[i] > limit_dist:
+                    valid_count = i
+                    break
+        
+        # Use only valid centroids
+        nearest_centroids = nearest_centroids[:valid_count]
         
         # Batch load postings
         postings = self._load_postings_batch(list(nearest_centroids))
