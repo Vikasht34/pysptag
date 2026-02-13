@@ -43,59 +43,46 @@ class RaBitQ:
         # Step 2: Compute residuals
         residuals = data - self.centroid
         
-        # Step 3: Normalize residuals (CRITICAL for RaBitQ!)
-        residual_norms = np.linalg.norm(residuals, axis=1, keepdims=True)
-        residual_norms = np.where(residual_norms == 0, 1, residual_norms)  # Avoid division by zero
-        normalized_residuals = residuals / residual_norms
-        
-        # Step 4: Quantize NORMALIZED residuals
+        # Step 3: Quantize RAW residuals (NOT normalized!)
+        # This is critical - official RaBitQ quantizes raw residuals
         if self.bq == 1:
-            # 1-bit: binary quantization
-            codes = (normalized_residuals > 0).astype(np.uint8)
+            # 1-bit: binary quantization of raw residuals
+            codes = (residuals > 0).astype(np.uint8)
         else:
-            # Multi-bit: uniform quantization of normalized residuals
-            res_min = normalized_residuals.min()
-            res_max = normalized_residuals.max()
+            # Multi-bit: uniform quantization of raw residuals
+            res_min = residuals.min()
+            res_max = residuals.max()
             self.res_min = res_min
             self.scale = (res_max - res_min) / (self.n_levels - 1)
             if self.scale == 0:
                 self.scale = 1
             
             codes = np.clip(
-                np.round((normalized_residuals - res_min) / self.scale),
+                np.round((residuals - res_min) / self.scale),
                 0, self.n_levels - 1
             ).astype(np.uint8)
         
-        # Step 5: Compute RaBitQ factors
+        # Step 4: Compute RaBitQ factors (using RAW residuals!)
         cb = -(self.n_levels - 1) / 2.0
         xu_cb = codes.astype(np.float32) + cb
         
-        # Compute <bar_o, o> where bar_o is dequantized normalized, o is normalized residual
-        if self.bq == 1:
-            bar_o = xu_cb  # For 1-bit, codes are already {0,1}, xu_cb is {-0.5, 0.5}
-        else:
-            bar_o = xu_cb * self.scale + res_min  # Dequantize to get normalized residual approximation
-        
-        ip_bar_o_o = np.sum(bar_o * normalized_residuals, axis=1)
-        ip_bar_o_o = np.where(ip_bar_o_o == 0, 1e-10, ip_bar_o_o)  # Avoid division by zero
-        
         l2_sqr = np.sum(residuals ** 2, axis=1)
-        l2_norm = residual_norms.squeeze()
+        l2_norm = np.sqrt(l2_sqr)
         
-        ip_bar_o_c = np.sum(bar_o * self.centroid, axis=1)
-        ip_residual_c = np.sum(residuals * self.centroid, axis=1)
+        # Dot products with RAW residuals (not normalized!)
+        ip_residual_xucb = np.sum(residuals * xu_cb, axis=1)
+        ip_residual_xucb = np.where(ip_residual_xucb == 0, np.inf, ip_residual_xucb)
         
-        # Metric-specific F_add and F_rescale
+        ip_cent_xucb = np.sum(self.centroid * xu_cb, axis=1)
+        
+        # Compute factors (same formula for all bit widths!)
         if self.metric == 'L2':
-            # L2: F_add = ||o-c||^2 + 2*||o-c|| * <bar_o, c> / <bar_o, o>
-            #     F_rescale = -2*Delta_x / <bar_o, o>
-            self.f_add = l2_sqr + 2 * l2_norm * ip_bar_o_c / ip_bar_o_o
-            self.f_rescale = -2 * l2_norm / ip_bar_o_o
+            self.f_add = l2_sqr + 2 * l2_sqr * ip_cent_xucb / ip_residual_xucb
+            self.f_rescale = -2 * l2_sqr / ip_residual_xucb
         elif self.metric in ('IP', 'Cosine'):
-            # IP: F_add = -<o-c, c> + ||o-c|| * <bar_o, c> / <bar_o, o>
-            #     F_rescale = -Delta_x / <bar_o, o>
-            self.f_add = -ip_residual_c + l2_norm * ip_bar_o_c / ip_bar_o_o
-            self.f_rescale = -l2_norm / ip_bar_o_o
+            ip_residual_c = np.sum(residuals * self.centroid, axis=1)
+            self.f_add = -ip_residual_c + l2_sqr * ip_cent_xucb / ip_residual_xucb
+            self.f_rescale = -l2_sqr / ip_residual_xucb
         
         return codes
     

@@ -1,0 +1,82 @@
+================================================================================
+SIFT1M: Efficient Quantization Comparison (shared clustering)
+================================================================================
+
+Loading SIFT1M dataset...
+✓ Base: (1000000, 128), Queries: (100, 128)
+
+================================================================================
+STEP 1: Build base index with clustering (one-time cost)
+================================================================================
+Building SPANN+RaBitQ with 6× replication for 1000000 vectors
+[1/5] Clustering into 200 clusters...
+[2/5] Assigning vectors to 6 nearest centroids...
+  Total assignments: 6,000,000
+  Avg replicas per vector: 6.0
+[3/5] Quantizing posting lists...
+  Original: 2929.69 MB
+  Compressed: 732.42 MB
+  Savings: 75.0%
+[4/5] Building BKTree+RNG on centroids...
+✓ Index built with 6× replication + quantization
+✓ Clustering + base build: 123.26s
+✓ Centroids: (200, 128), Postings: 200
+
+================================================================================
+TEST: 1-bit (reusing clustering)
+================================================================================
+Quantizing posting lists...
+Quantization time: 6.75s (vs 123.26s full build)
+Search time: 0.74s, QPS: 135.1
+Latency: p50=7.41ms, p90=9.29ms, p99=10.22ms
+Recall@10: 82.70%
+
+================================================================================
+TEST: 2-bit (reusing clustering)
+================================================================================
+Quantizing posting lists...
+Quantization time: 8.34s (vs 123.26s full build)
+Search time: 0.68s, QPS: 146.5
+Latency: p50=6.80ms, p90=8.69ms, p99=9.87ms
+Recall@10: 11.90%
+
+================================================================================
+TEST: 4-bit (reusing clustering)
+================================================================================
+Quantizing posting lists...
+Quantization time: 8.34s (vs 123.26s full build)
+Search time: 0.64s, QPS: 156.7
+Latency: p50=6.35ms, p90=8.09ms, p99=8.95ms
+Recall@10: 11.40%
+
+================================================================================
+TEST: no-quant (reusing clustering)
+================================================================================
+Quantizing posting lists...
+Quantization time: 1.72s (vs 123.26s full build)
+Search time: 0.98s, QPS: 101.7
+Latency: p50=8.90ms, p90=14.31ms, p99=22.92ms
+Recall@10: 93.40%
+
+================================================================================
+SUMMARY: Quantization Comparison (shared clustering)
+================================================================================
+Clustering time: 123.26s (one-time cost)
+
+Config     Quant(s)   Search(s)  QPS      p50(ms)  p90(ms)  p99(ms)  Recall@10
+--------------------------------------------------------------------------------
+1-bit      6.75       0.74       135.1    7.41     9.29     10.22    82.70%
+2-bit      8.34       0.68       146.5    6.80     8.69     9.87     11.90%
+4-bit      8.34       0.64       156.7    6.35     8.09     8.95     11.40%
+no-quant   1.72       0.98       101.7    8.90     14.31    22.92    93.40%
+================================================================================
+
+Total time: 148.40s (vs 493.03s if clustering 4 times)
+Time saved: 369.77s (75% faster)
+
+Recommendation:
+  1-bit: Fastest, 32× compression - use for very large scale
+  2-bit: Balanced, 16× compression - good middle ground
+  4-bit: Best recall, 8× compression - recommended for production
+  no-quant: Highest recall, no compression - baseline comparison
+================================================================================
