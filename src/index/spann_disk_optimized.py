@@ -1,8 +1,7 @@
 """
-Optimized disk-based SPANN with Phase 1 optimizations:
-1. Batch disk I/O - load multiple postings at once
-2. Memory-mapped files - zero-copy access
-3. LRU cache - cache hot posting lists
+Optimized disk-based SPANN with Phase 1 + Phase 2 optimizations:
+Phase 1: Batch I/O + mmap + cache
+Phase 2: Parallel search
 
 Target: <10ms latency (from 22ms)
 """
@@ -12,12 +11,13 @@ import struct
 import mmap
 from typing import Tuple, Optional, Dict
 from functools import lru_cache
+from concurrent.futures import ThreadPoolExecutor
 from ..core.rng import RNG, MetricType
 from ..quantization.rabitq_numba import RaBitQNumba
 
 
 class SPANNDiskOptimized:
-    """Optimized disk-based SPANN with batch I/O, mmap, and caching"""
+    """Optimized disk-based SPANN with batch I/O, mmap, cache, and parallel search"""
     
     def __init__(
         self,
@@ -29,7 +29,8 @@ class SPANNDiskOptimized:
         metric: MetricType = 'L2',
         tree_type: str = 'KDT',
         disk_path: str = './spann_index',
-        cache_size: int = 128  # Cache 128 hot postings
+        cache_size: int = 128,  # Cache 128 hot postings
+        num_threads: int = 4  # Parallel search threads
     ):
         self.dim = dim
         self.target_posting_size = target_posting_size
@@ -40,6 +41,7 @@ class SPANNDiskOptimized:
         self.tree_type = tree_type
         self.disk_path = disk_path
         self.cache_size = cache_size
+        self.num_threads = num_threads
         
         # Create tree
         if tree_type == 'BKT':
@@ -318,7 +320,35 @@ class SPANNDiskOptimized:
         # Batch load postings
         postings = self._load_postings_batch(list(nearest_centroids))
         
-        # Search postings
+        # Parallel search postings
+        if self.num_threads > 1:
+            results = self._search_postings_parallel(query, postings, nearest_centroids, max_check)
+        else:
+            results = self._search_postings_sequential(query, postings, nearest_centroids, max_check)
+        
+        all_indices, all_dists = results
+        
+        if len(all_indices) == 0:
+            return np.array([]), np.array([])
+        
+        all_indices = np.array(all_indices)
+        
+        if self.use_rabitq:
+            if self.metric == 'L2':
+                true_dists = np.sum((data[all_indices] - query) ** 2, axis=1)
+            elif self.metric == 'IP':
+                true_dists = -np.dot(data[all_indices], query)
+            elif self.metric == 'Cosine':
+                true_dists = -np.dot(data[all_indices], query)
+            top_k_idx = np.argsort(true_dists)[:k]
+        else:
+            true_dists = np.array(all_dists)
+            top_k_idx = np.argsort(true_dists)[:k]
+        
+        return true_dists[top_k_idx], all_indices[top_k_idx]
+    
+    def _search_postings_sequential(self, query, postings, nearest_centroids, max_check):
+        """Sequential posting search (original)"""
         seen = set()
         all_indices = []
         all_dists = []
@@ -356,24 +386,93 @@ class SPANNDiskOptimized:
             if len(all_indices) >= max_check:
                 break
         
-        if len(all_indices) == 0:
-            return np.array([]), np.array([])
+        return all_indices, all_dists
+    
+    def _search_one_posting(self, args):
+        """Search one posting (for parallel execution)"""
+        centroid_id, query, postings, max_check = args
         
-        all_indices = np.array(all_indices)
+        if centroid_id not in postings:
+            return []
+        
+        posting_ids, codes, rabitq = postings[centroid_id]
+        search_k = min(max_check, len(posting_ids))
+        
+        results = []
         
         if self.use_rabitq:
-            if self.metric == 'L2':
-                true_dists = np.sum((data[all_indices] - query) ** 2, axis=1)
-            elif self.metric == 'IP':
-                true_dists = -np.dot(data[all_indices], query)
-            elif self.metric == 'Cosine':
-                true_dists = -np.dot(data[all_indices], query)
-            top_k_idx = np.argsort(true_dists)[:k]
+            _, local_indices = rabitq.search(query, codes, k=search_k)
+            for local_idx in local_indices:
+                results.append((posting_ids[local_idx], None))
         else:
-            true_dists = np.array(all_dists)
-            top_k_idx = np.argsort(true_dists)[:k]
+            if self.metric == 'L2':
+                dists = np.sum((codes - query) ** 2, axis=1)
+            elif self.metric == 'IP':
+                dists = -np.dot(codes, query)
+            elif self.metric == 'Cosine':
+                dists = -np.dot(codes, query)
+            local_indices = np.argsort(dists)[:search_k]
+            local_dists = dists[local_indices]
+            for idx, local_idx in enumerate(local_indices):
+                results.append((posting_ids[local_idx], local_dists[idx]))
         
-        return true_dists[top_k_idx], all_indices[top_k_idx]
+        return results
+    
+    def _search_postings_parallel(self, query, postings, nearest_centroids, max_check):
+        """Parallel posting search using ThreadPoolExecutor"""
+        # Note: Use ProcessPoolExecutor if Numba parallel causes issues
+        # For now, process in chunks to reduce thread conflicts
+        
+        chunk_size = max(1, len(nearest_centroids) // self.num_threads)
+        chunks = [nearest_centroids[i:i+chunk_size] for i in range(0, len(nearest_centroids), chunk_size)]
+        
+        def search_chunk(centroid_ids):
+            results = []
+            for cid in centroid_ids:
+                if cid not in postings:
+                    continue
+                posting_ids, codes, rabitq = postings[cid]
+                search_k = min(max_check, len(posting_ids))
+                
+                if self.use_rabitq:
+                    _, local_indices = rabitq.search(query, codes, k=search_k)
+                    for local_idx in local_indices:
+                        results.append((posting_ids[local_idx], None))
+                else:
+                    if self.metric == 'L2':
+                        dists = np.sum((codes - query) ** 2, axis=1)
+                    elif self.metric == 'IP':
+                        dists = -np.dot(codes, query)
+                    elif self.metric == 'Cosine':
+                        dists = -np.dot(codes, query)
+                    local_indices = np.argsort(dists)[:search_k]
+                    local_dists = dists[local_indices]
+                    for idx, local_idx in enumerate(local_indices):
+                        results.append((posting_ids[local_idx], local_dists[idx]))
+            return results
+        
+        # Execute chunks in parallel
+        with ThreadPoolExecutor(max_workers=self.num_threads) as executor:
+            results_list = list(executor.map(search_chunk, chunks))
+        
+        # Merge results and deduplicate
+        seen = set()
+        all_indices = []
+        all_dists = []
+        
+        for results in results_list:
+            for global_id, dist in results:
+                if global_id not in seen:
+                    seen.add(global_id)
+                    all_indices.append(global_id)
+                    if dist is not None:
+                        all_dists.append(dist)
+                    if len(all_indices) >= max_check:
+                        break
+            if len(all_indices) >= max_check:
+                break
+        
+        return all_indices, all_dists
     
     def print_cache_stats(self):
         """Print cache statistics"""

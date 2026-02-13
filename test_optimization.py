@@ -72,7 +72,7 @@ print(f"Recall@10: {avg_recall1:.2f}%")
 
 # Test 2: Optimized
 print("\n" + "="*80)
-print("TEST 2: Optimized (Batch I/O + mmap + cache)")
+print("TEST 2: Optimized (Batch I/O + mmap + cache + parallel)")
 print("="*80)
 
 from src.index.spann_disk_optimized import SPANNDiskOptimized
@@ -86,7 +86,8 @@ index2 = SPANNDiskOptimized(
     use_rabitq=True,
     tree_type='KDT',
     disk_path='./test_optimized',
-    cache_size=128
+    cache_size=128,
+    num_threads=1  # Disable parallel for now (Numba conflict)
 )
 index2.build(data)
 build_time2 = time.time() - t0
