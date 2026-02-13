@@ -131,7 +131,8 @@ class SPANNRaBitQReplica:
         
         for iteration in range(max_iter):
             # Vectorized distance computation (batch processing)
-            batch_size = 10000
+            # Smaller batch for L2 to avoid huge intermediate arrays
+            batch_size = 1000 if self.metric == 'L2' else 10000
             labels = np.zeros(n, dtype=np.int32)
             counts = np.zeros(k, dtype=np.int32)
             
