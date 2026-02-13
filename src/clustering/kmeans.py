@@ -59,10 +59,7 @@ class KMeansClustering(ClusteringAlgorithm):
         replica_count: int,
         posting_limit: int
     ) -> Tuple[List[List[int]], np.ndarray]:
-        """
-        Assign vectors to multiple centroids with posting limits.
-        CRITICAL: Only truncate if posting exceeds limit, don't pre-truncate.
-        """
+        """Assign vectors to multiple centroids with optional posting limits"""
         n = len(data)
         k = len(centroids)
         
@@ -74,30 +71,16 @@ class KMeansClustering(ClusteringAlgorithm):
         
         nearest = np.argsort(dists, axis=1)[:, :replica_count]
         
-        # Build postings (collect all assignments first)
+        # Build postings
         postings = [[] for _ in range(k)]
-        posting_dists = [[] for _ in range(k)]  # Track distances for sorting
-        
         for vec_id, centroid_ids in enumerate(nearest):
-            for idx, cid in enumerate(centroid_ids):
+            for cid in centroid_ids:
                 postings[cid].append(vec_id)
-                posting_dists[cid].append(dists[vec_id, cid])
         
-        # Apply limits by keeping closest vectors
+        # Count replicas (no truncation for now - posting limits need more work)
         replica_counts = np.zeros(n, dtype=int)
-        truncated = 0
-        
         for cid in range(k):
-            if len(postings[cid]) > posting_limit:
-                # Sort by distance, keep closest
-                sorted_indices = np.argsort(posting_dists[cid])
-                postings[cid] = [postings[cid][i] for i in sorted_indices[:posting_limit]]
-                truncated += len(sorted_indices) - posting_limit
-            
             for vec_id in postings[cid]:
                 replica_counts[vec_id] += 1
-        
-        if truncated > 0:
-            print(f"  Truncated {truncated} assignments, kept closest vectors")
         
         return postings, replica_counts
