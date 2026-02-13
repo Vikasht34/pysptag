@@ -58,7 +58,7 @@ print("="*70)
 
 num_queries = 100
 k = 10
-max_check = 4096
+max_check = 64  # SPTAG default, not 4096!
 
 # Timing arrays
 centroid_search_times = []
@@ -99,10 +99,12 @@ for i in range(num_queries):
     # === STAGE 2: Load Posting Lists ===
     t0 = time.perf_counter()
     candidates = []
+    max_vectors_per_posting = 200  # SPTAG limit
     for cid in nearest_centroids[:min(max_check, len(nearest_centroids))]:
         posting = index._load_posting_mmap(cid)
         if posting is not None and posting[0] is not None:
-            candidates.extend(posting[0])
+            # Limit vectors per posting
+            candidates.extend(posting[0][:max_vectors_per_posting])
     t_posting = (time.perf_counter() - t0) * 1000
     
     # === STAGE 3: Distance Computation ===
