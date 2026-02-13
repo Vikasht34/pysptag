@@ -71,7 +71,8 @@ class RaBitQ:
                 self.f_rescale = -2 * l2_sqr / ip_residual_xucb
             elif self.metric in ('IP', 'Cosine'):
                 ip_residual_c = np.sum(residuals * self.centroid, axis=1)
-                self.f_add = -ip_residual_c + l2_sqr * ip_cent_xucb / ip_residual_xucb
+                # Official formula: f_add = 1 - <residual, centroid> + (l2_sqr * ip_cent_xucb / ip_residual_xucb)
+                self.f_add = 1 - ip_residual_c + l2_sqr * ip_cent_xucb / ip_residual_xucb
                 self.f_rescale = -l2_sqr / ip_residual_xucb
         else:
             # Multi-bit: Use scalar quantization with delta rescaling
@@ -190,7 +191,10 @@ class RaBitQ:
                 G_add = -np.dot(query, self.centroid)
             
             estimated_dist = self.f_add + G_add + self.f_rescale * ip_x0_qr
-            estimated_dist = np.maximum(estimated_dist, 0)
+            
+            # For L2, clamp to 0; for IP/Cosine, keep negative values
+            if self.metric == 'L2':
+                estimated_dist = np.maximum(estimated_dist, 0)
         else:
             # Multi-bit: Dequantize and reconstruct
             dequantized_residuals = codes.astype(np.float32) * self.scale + self.res_min
