@@ -52,39 +52,18 @@ class SPANNDiskBased:
         n, dim = data.shape
         print(f"Building disk-based SPANN for {n} vectors")
         
-        # Step 1: Clustering (simple k-means)
+        # Step 1: Clustering (fast vectorized k-means)
         print("[1/5] Clustering...")
         self.num_clusters = max(1, n // self.target_posting_size)
-        
-        # Initialize centroids randomly
-        indices = np.random.choice(n, self.num_clusters, replace=False)
-        self.centroids = data[indices].copy()
-        
-        # K-means iterations
-        for iteration in range(20):
-            # Assign to nearest centroid
-            if self.metric == 'L2':
-                dists = np.sum((data[:, None, :] - self.centroids[None, :, :]) ** 2, axis=2)
-            elif self.metric in ('IP', 'Cosine'):
-                dists = -np.dot(data, self.centroids.T)
-            
-            labels = np.argmin(dists, axis=1)
-            
-            # Update centroids
-            new_centroids = np.array([data[labels == i].mean(axis=0) if np.sum(labels == i) > 0 
-                                      else self.centroids[i] for i in range(self.num_clusters)])
-            
-            # Check convergence
-            if np.allclose(new_centroids, self.centroids):
-                print(f"  Converged at iteration {iteration + 1}")
-                break
-            
-            self.centroids = new_centroids.astype(np.float32)
+        labels, self.centroids = self._fast_kmeans(data, self.num_clusters)
         
         # Step 2: Assign to multiple centroids (replication)
         print(f"[2/5] Assigning vectors to {self.replica_count} nearest centroids...")
         if self.metric == 'L2':
-            dists = np.sum((data[:, None, :] - self.centroids[None, :, :]) ** 2, axis=2)
+            # Optimized: ||a-b||^2 = ||a||^2 + ||b||^2 - 2*a.b
+            data_sq = np.sum(data ** 2, axis=1, keepdims=True)
+            centroids_sq = np.sum(self.centroids ** 2, axis=1)
+            dists = data_sq + centroids_sq - 2 * np.dot(data, self.centroids.T)
         elif self.metric in ('IP', 'Cosine'):
             dists = -np.dot(data, self.centroids.T)
         
@@ -209,6 +188,54 @@ class SPANNDiskBased:
             data = pickle.load(f)
         
         return data['posting_ids'], data['codes'], data['rabitq']
+    
+    def _fast_kmeans(self, data: np.ndarray, k: int, max_iter: int = 50):
+        """Fast vectorized k-means clustering"""
+        n, dim = data.shape
+        
+        # Initialize centroids randomly
+        indices = np.random.choice(n, k, replace=False)
+        centers = data[indices].copy()
+        
+        batch_size = 10000  # Process in batches to save memory
+        
+        for iteration in range(max_iter):
+            # Assign labels in batches
+            labels = np.zeros(n, dtype=np.int32)
+            
+            if self.metric == 'L2':
+                centers_sq = np.sum(centers ** 2, axis=1)
+            
+            for start in range(0, n, batch_size):
+                end = min(start + batch_size, n)
+                batch = data[start:end]
+                
+                if self.metric == 'L2':
+                    batch_sq = np.sum(batch ** 2, axis=1, keepdims=True)
+                    dists = batch_sq + centers_sq - 2 * np.dot(batch, centers.T)
+                elif self.metric in ('IP', 'Cosine'):
+                    dists = -np.dot(batch, centers.T)
+                
+                labels[start:end] = np.argmin(dists, axis=1)
+            
+            # Recompute centers
+            new_centers = np.zeros_like(centers)
+            for j in range(k):
+                mask = labels == j
+                if mask.sum() > 0:
+                    new_centers[j] = data[mask].mean(axis=0)
+                else:
+                    new_centers[j] = centers[j]
+            
+            # Check convergence
+            diff = np.sum((new_centers - centers) ** 2)
+            centers = new_centers
+            threshold = 1e-2 * k
+            if diff < threshold:
+                print(f"  Converged at iteration {iteration+1}")
+                break
+        
+        return labels, centers
     
     def search(
         self,
