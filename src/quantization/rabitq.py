@@ -43,24 +43,13 @@ class RaBitQ:
         # Step 2: Compute residuals
         residuals = data - self.centroid
         
-        # Step 3: Quantize RAW residuals (NOT normalized!)
-        # This is critical - official RaBitQ quantizes raw residuals
+        # Step 3: Quantize residuals
         if self.bq == 1:
             # 1-bit: binary quantization of raw residuals
             codes = (residuals > 0).astype(np.uint8)
         else:
-            # Multi-bit: uniform quantization of raw residuals
-            res_min = residuals.min()
-            res_max = residuals.max()
-            self.res_min = res_min
-            self.scale = (res_max - res_min) / (self.n_levels - 1)
-            if self.scale == 0:
-                self.scale = 1
-            
-            codes = np.clip(
-                np.round((residuals - res_min) / self.scale),
-                0, self.n_levels - 1
-            ).astype(np.uint8)
+            # Multi-bit: optimized quantization with best_rescale_factor
+            codes = self._quantize_multibit(residuals)
         
         # Step 4: Compute RaBitQ factors (using RAW residuals!)
         cb = -(self.n_levels - 1) / 2.0
@@ -83,6 +72,85 @@ class RaBitQ:
             ip_residual_c = np.sum(residuals * self.centroid, axis=1)
             self.f_add = -ip_residual_c + l2_sqr * ip_cent_xucb / ip_residual_xucb
             self.f_rescale = -l2_sqr / ip_residual_xucb
+        
+        return codes
+    
+    def _best_rescale_factor(self, o_abs: np.ndarray, ex_bits: int) -> float:
+        """Find optimal rescaling factor for multi-bit quantization (from official RaBitQ)"""
+        import heapq
+        
+        kEps = 1e-5
+        kNEnum = 10
+        kTightStart = [0, 0.15, 0.20, 0.52, 0.59, 0.71, 0.75, 0.77, 0.81]
+        
+        dim = len(o_abs)
+        max_o = o_abs.max()
+        
+        t_end = ((1 << ex_bits) - 1 + kNEnum) / max_o
+        t_start = t_end * kTightStart[ex_bits]
+        
+        # Initialize quantization codes
+        cur_o_bar = np.floor(t_start * o_abs + kEps).astype(np.int32)
+        sqr_denominator = dim * 0.25 + np.sum(cur_o_bar * cur_o_bar + cur_o_bar)
+        numerator = np.sum((cur_o_bar + 0.5) * o_abs)
+        
+        # Priority queue: (t_value, dimension_index)
+        next_t = [(float((cur_o_bar[i] + 1) / o_abs[i]), i) for i in range(dim)]
+        heapq.heapify(next_t)
+        
+        max_ip = 0
+        best_t = 0
+        
+        while next_t:
+            cur_t, update_id = heapq.heappop(next_t)
+            
+            # Update quantization code
+            cur_o_bar[update_id] += 1
+            update_o_bar = cur_o_bar[update_id]
+            sqr_denominator += 2 * update_o_bar
+            numerator += o_abs[update_id]
+            
+            # Compute inner product
+            cur_ip = numerator / np.sqrt(sqr_denominator)
+            if cur_ip > max_ip:
+                max_ip = cur_ip
+                best_t = cur_t
+            
+            # Add next candidate
+            if update_o_bar < (1 << ex_bits) - 1:
+                t_next = (update_o_bar + 1) / o_abs[update_id]
+                if t_next < t_end:
+                    heapq.heappush(next_t, (t_next, update_id))
+        
+        return best_t
+    
+    def _quantize_multibit(self, residuals: np.ndarray) -> np.ndarray:
+        """Quantize residuals using optimized multi-bit quantization
+        
+        Format: 1 bit for sign + (bq-1) bits for magnitude
+        """
+        n, dim = residuals.shape
+        codes = np.zeros((n, dim), dtype=np.uint8)
+        
+        kEps = 1e-5
+        ex_bits = self.bq - 1  # Reserve 1 bit for sign
+        
+        for i in range(n):
+            # Extract sign
+            signs = (residuals[i] > 0).astype(np.uint8)
+            
+            # Take absolute values for magnitude quantization
+            o_abs = np.abs(residuals[i])
+            
+            # Find optimal rescaling factor
+            t = self._best_rescale_factor(o_abs, ex_bits)
+            
+            # Quantize magnitude
+            quantized = np.floor(t * o_abs + kEps).astype(np.int32)
+            quantized = np.clip(quantized, 0, (1 << ex_bits) - 1)
+            
+            # Combine: sign bit in MSB, magnitude in lower bits
+            codes[i] = quantized + (signs << ex_bits)
         
         return codes
     
