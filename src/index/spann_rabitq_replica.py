@@ -181,7 +181,8 @@ class SPANNRaBitQReplica:
         return labels, centers
     
     def search(self, query: np.ndarray, data: np.ndarray, k: int = 10, 
-               search_internal_result_num: int = 64, max_check: int = 4096):
+               search_internal_result_num: int = 64, max_check: int = 4096,
+               max_vectors_per_posting: int = None):  # None = no limit
         """Search using quantized postings with replication"""
         # Find nearest centroids (use correct metric)
         if self.metric == 'L2':
@@ -201,7 +202,11 @@ class SPANNRaBitQReplica:
             if len(posting_ids) == 0:
                 continue
             
-            codes = self.posting_codes[centroid_id]
+            # Limit vectors per posting (if specified)
+            if max_vectors_per_posting is not None:
+                posting_ids = posting_ids[:max_vectors_per_posting]
+            
+            codes = self.posting_codes[centroid_id][:len(posting_ids)]
             rabitq = self.posting_rabitqs[centroid_id]
             
             # Limit k to posting size
