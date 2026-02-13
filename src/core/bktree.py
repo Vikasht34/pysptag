@@ -134,6 +134,7 @@ class BKTree:
         n_samples = last - first
         k = min(self.kmeans_k, n_samples // self.leaf_size + 1)
         k = max(k, 2)
+        k = min(k, n_samples)  # Can't have more clusters than samples
         
         # Initialize centers randomly
         center_idx = np.random.choice(n_samples, k, replace=False)
