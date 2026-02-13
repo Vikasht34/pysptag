@@ -184,7 +184,8 @@ class SPANNRaBitQReplica:
                search_internal_result_num: int = 64, max_check: int = 4096,
                max_vectors_per_posting: int = None):  # None = no limit
         """Search using quantized postings with replication"""
-        # Find nearest centroids (use correct metric)
+        # Find nearest centroids (brute force is fast for <1000 centroids)
+        # TODO: Use RNG graph search for 10K+ centroids
         if self.metric == 'L2':
             centroid_dists = np.sum((self.centroids - query) ** 2, axis=1)
         elif self.metric == 'IP':
