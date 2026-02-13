@@ -207,8 +207,13 @@ class SPANNRaBitQReplica:
                 # Use RaBitQ for fast filtering (distances not comparable across postings)
                 _, local_indices = rabitq.search(query, codes, None, k=search_k)
             else:
-                # Direct distance computation (codes = original vectors)
-                dists = np.sum((codes - query) ** 2, axis=1)
+                # Direct distance computation (codes = original vectors) - use correct metric
+                if self.metric == 'L2':
+                    dists = np.sum((codes - query) ** 2, axis=1)
+                elif self.metric == 'IP':
+                    dists = -np.dot(codes, query)
+                elif self.metric == 'Cosine':
+                    dists = -np.dot(codes, query)
                 local_indices = np.argsort(dists)[:search_k]
             
             # Map to global IDs and deduplicate
@@ -224,12 +229,17 @@ class SPANNRaBitQReplica:
             if len(all_indices) >= max_check:
                 break
         
-        # Rerank with true distances
+        # Rerank with true distances - use correct metric
         if len(all_indices) == 0:
             return np.array([]), np.array([])
         
         all_indices = np.array(all_indices)
-        true_dists = np.sum((data[all_indices] - query) ** 2, axis=1)
+        if self.metric == 'L2':
+            true_dists = np.sum((data[all_indices] - query) ** 2, axis=1)
+        elif self.metric == 'IP':
+            true_dists = -np.dot(data[all_indices], query)
+        elif self.metric == 'Cosine':
+            true_dists = -np.dot(data[all_indices], query)
         top_k_idx = np.argsort(true_dists)[:k]
         
         return true_dists[top_k_idx], all_indices[top_k_idx]
