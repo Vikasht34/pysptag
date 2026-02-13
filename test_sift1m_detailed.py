@@ -77,23 +77,13 @@ for i in range(num_queries):
     
     # === STAGE 1: Centroid Search ===
     t0 = time.perf_counter()
-    if hasattr(index, 'rng') and len(index.rng.graph) > 0 and index.rng.graph[0][0] >= 0:
-        # Use RNG graph search
-        from src.core.bktree_rng_search import bktree_rng_search
-        nearest_centroids = bktree_rng_search(
-            query, index.centroids, index.tree.tree_roots,
-            index.tree.tree_start, index.rng.graph,
-            64, index.metric
-        )
-    else:
-        # Fallback to brute-force
-        import faiss
-        if not hasattr(index, '_centroid_index'):
-            index._centroid_index = faiss.IndexFlatL2(index.centroids.shape[1])
-            index._centroid_index.add(index.centroids.astype(np.float32))
-        _, nearest_centroids = index._centroid_index.search(query.reshape(1, -1).astype(np.float32), 64)
-        nearest_centroids = nearest_centroids[0]
-    
+    # Always use faiss for fast centroid search (RNG graph search is too slow)
+    import faiss
+    if not hasattr(index, '_centroid_index'):
+        index._centroid_index = faiss.IndexFlatL2(index.centroids.shape[1])
+        index._centroid_index.add(index.centroids.astype(np.float32))
+    _, nearest_centroids = index._centroid_index.search(query.reshape(1, -1).astype(np.float32), 64)
+    nearest_centroids = nearest_centroids[0]
     t_centroid = (time.perf_counter() - t0) * 1000
     
     # === STAGE 2: Load Posting Lists ===
