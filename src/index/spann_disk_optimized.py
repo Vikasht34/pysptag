@@ -152,7 +152,20 @@ class SPANNDiskOptimized:
         # Step 4: Build tree + RNG
         print(f"[4/5] Building {self.tree_type}+RNG on centroids...")
         self.tree.build(self.centroids)
-        self.rng.build(self.centroids)
+        
+        # Build initial graph from tree search
+        print(f"  Building initial RNG graph from {self.tree_type}...")
+        init_graph = []
+        for i in range(len(self.centroids)):
+            if self.tree_type == 'BKT':
+                neighbors = self.tree.search(self.centroids[i], self.centroids, 
+                                            self.rng.neighborhood_size, self.metric)
+            else:
+                neighbors = self.tree.search(self.centroids[i], self.centroids,
+                                            self.rng.neighborhood_size, self.metric)
+            init_graph.append(neighbors)
+        
+        self.rng.build(self.centroids, init_graph=init_graph)
         
         # Step 5: Save metadata
         print("[5/5] Saving metadata...")
