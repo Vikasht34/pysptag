@@ -135,19 +135,14 @@ class SPANNRaBitQReplica:
             labels = np.zeros(n, dtype=np.int32)
             counts = np.zeros(k, dtype=np.int32)
             
-            # Precompute center norms for L2 (outside batch loop)
-            if self.metric == 'L2':
-                centers_sq = np.sum(centers ** 2, axis=1, keepdims=True).T  # (1, k)
-            
             for start in range(0, n, batch_size):
                 end = min(start + batch_size, n)
                 batch = data[start:end]
                 
                 # Compute distances for batch: (batch_size, k) - use correct metric
                 if self.metric == 'L2':
-                    # Optimized L2: ||a-b||^2 = ||a||^2 + ||b||^2 - 2*a.b
-                    batch_sq = np.sum(batch ** 2, axis=1, keepdims=True)  # (batch_size, 1)
-                    dists = batch_sq + centers_sq - 2 * np.dot(batch, centers.T)
+                    # Use original formula (simpler, works well)
+                    dists = np.sum((batch[:, None, :] - centers[None, :, :]) ** 2, axis=2)
                 elif self.metric in ('IP', 'Cosine'):
                     dists = -np.dot(batch, centers.T)  # Negative for minimization
                 dists += lambda_penalty * counts[None, :]
