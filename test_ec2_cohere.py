@@ -1,14 +1,14 @@
 """
-EC2 Test Script for OPTIMIZED Disk-Based SPANN on Cohere 1M
-Uses Phase 1 optimizations: batch I/O + mmap + cache
+EC2 Test Script for SPTAG-Optimized Disk-Based SPANN on Cohere 1M
+Uses ratio-based clustering (1% of data as centroids)
 
 Dataset: Cohere 1M (768-dim embeddings)
 Format: HDF5
 
-Target: <10ms latency (from 22ms)
+Target: p90 <10ms with 90%+ recall on EBS
 
 Prerequisites:
-- EC2 instance with sufficient RAM (16GB+)
+- EC2 instance with sufficient RAM (32GB+)
 - EBS volume mounted (for disk storage)
 - Cohere 1M dataset downloaded
 
@@ -34,12 +34,12 @@ def get_dir_size(path):
     return total
 
 print("="*80)
-print("EC2: Disk-Based SPANN on Cohere 1M")
+print("EC2: SPTAG-Optimized Disk-Based SPANN on Cohere 1M")
 print("="*80)
 
 # Configuration
 DATA_FILE = os.path.expanduser('~/pysptag/cohere-wikipedia-768-angular.hdf5')
-INDEX_DIR = '/mnt/ebs/spann_cohere'  # EBS mount point
+INDEX_DIR = '/mnt/ebs/spann_cohere_sptag'  # EBS mount point
 NUM_QUERIES = 100
 
 # Load Cohere 1M
@@ -52,113 +52,110 @@ with h5py.File(DATA_FILE, 'r') as f:
 print(f"✓ Base: {base.shape}, Queries: {queries.shape}")
 print(f"✓ Dimension: {base.shape[1]}")
 
-# Test configurations
-configs = [
-    ('4-bit', 4, True),
-    ('2-bit', 2, True),
-    ('no-quant', 4, False),
-]
+# Build SPTAG-optimized index
+print("\n" + "="*80)
+print("Building SPTAG-Optimized Index")
+print("="*80)
+print("  Config: ratio=0.01 (10K clusters), replica=8, no_quant")
+print("  Posting limit: 500 (adaptive for 1M)")
 
-results = []
+disk_path = INDEX_DIR
 
-for name, bq, use_rabitq in configs:
-    print("\n" + "="*80)
-    print(f"TEST: {name}")
-    print("="*80)
-    
-    disk_path = f'{INDEX_DIR}_{name}'
-    
-    # Build index
-    metadata_file = os.path.join(disk_path, 'metadata.pkl')
-    if os.path.exists(metadata_file):
-        print(f"Note: Optimized version doesn't support loading yet, rebuilding...")
-    
-    print(f"Building optimized index...")
-    t0 = time.time()
-    index = SPANNDiskOptimized(
-        dim=768,  # Cohere dimension
-        target_posting_size=5000,
-        replica_count=6,
-        bq=bq,
-        use_rabitq=use_rabitq,
-        metric='Cosine',  # Cohere uses cosine similarity
-        tree_type='KDT',  # KDTree is 3× faster than BKTree
-        disk_path=disk_path,
-        cache_size=256  # Larger cache for better hit rate
-    )
-    index.build(base)
-    build_time = time.time() - t0
-    print(f"✓ Built in {build_time:.2f}s")
-    
-    # Check disk usage
-    disk_size = get_dir_size(disk_path)
-    print(f"✓ Disk usage: {disk_size/1024**2:.2f} MB")
-    
-    # Search
-    print("Searching...")
-    t0 = time.time()
-    recalls = []
+# Build index
+print(f"\nBuilding index...")
+t0 = time.time()
+index = SPANNDiskOptimized(
+    dim=768,  # Cohere dimension
+    target_posting_size=500,  # Adaptive limit for 1M vectors
+    replica_count=8,
+    use_rabitq=False,  # No quantization
+    metric='Cosine',  # Cohere uses cosine similarity
+    tree_type='KDT',
+    disk_path=disk_path,
+    cache_size=1024,  # Large cache for EBS
+    clustering='kmeans'
+)
+index.build(base)
+build_time = time.time() - t0
+print(f"\n✓ Built in {build_time:.1f}s ({build_time/60:.1f} min)")
+
+# Check disk usage
+disk_size = get_dir_size(disk_path)
+print(f"✓ Disk usage: {disk_size/1024**3:.2f} GB")
+
+# Warm up cache
+print("\nWarming up cache (20 queries)...")
+for q in queries[:20]:
+    index.search(q, base, k=10, search_internal_result_num=64, max_check=8192)
+
+# Search
+print(f"\nTesting ({NUM_QUERIES} queries)...")
+t0 = time.time()
+recalls = []
+latencies = []
     latencies = []
     
     for i, query in enumerate(queries):
         q_start = time.time()
-        dists, indices = index.search(
-            query, base, k=10, 
-            search_internal_result_num=128,
-            max_check=4096
-        )
-        latencies.append((time.time() - q_start) * 1000)
-        
-        if len(indices) == 0:
-            recalls.append(0)
-            continue
-        
-        gt = set(groundtruth[i][:10])
-        found = set(indices[:10])
-        recalls.append(len(gt & found) / 10)
-        
-        if (i + 1) % 20 == 0:
-            print(f"  Processed {i+1}/{NUM_QUERIES} queries")
+for i, query in enumerate(queries):
+    q_start = time.time()
+    dists, indices = index.search(
+        query, base, k=10, 
+        search_internal_result_num=64,
+        max_check=8192
+    )
+    latencies.append((time.time() - q_start) * 1000)
     
-    search_time = time.time() - t0
-    avg_recall = np.mean(recalls) * 100
-    p50 = np.percentile(latencies, 50)
-    p90 = np.percentile(latencies, 90)
-    p99 = np.percentile(latencies, 99)
-    qps = NUM_QUERIES / search_time
+    if len(indices) == 0:
+        recalls.append(0)
+        continue
     
-    print(f"Search time: {search_time:.2f}s, QPS: {qps:.1f}")
-    print(f"Latency: p50={p50:.2f}ms, p90={p90:.2f}ms, p99={p99:.2f}ms")
-    print(f"Recall@10: {avg_recall:.2f}%")
+    gt = set(groundtruth[i][:10])
+    found = set(indices[:10])
+    recalls.append(len(gt & found) / 10)
     
-    # Print cache stats
-    index.print_cache_stats()
-    
-    results.append({
-        'config': name,
-        'disk_mb': disk_size/1024**2,
-        'search_time': search_time,
-        'qps': qps,
-        'p50': p50,
-        'p90': p90,
-        'p99': p99,
-        'recall': avg_recall
-    })
+    if (i + 1) % 20 == 0:
+        print(f"  {i+1}/{NUM_QUERIES} queries...")
 
-# Summary
-print("\n" + "="*80)
-print("SUMMARY: OPTIMIZED Disk-Based SPANN on Cohere 1M (EC2)")
-print("="*80)
-print("Phase 1 Optimizations: Batch I/O + mmap + cache")
-print()
-print(f"{'Config':<12} {'Disk(MB)':<10} {'QPS':<8} {'p50(ms)':<8} {'p90(ms)':<8} {'p99(ms)':<8} {'Recall':<8}")
-print("-"*80)
-for r in results:
-    print(f"{r['config']:<12} {r['disk_mb']:<10.1f} {r['qps']:<8.1f} {r['p50']:<8.2f} {r['p90']:<8.2f} {r['p99']:<8.2f} {r['recall']:<8.2f}%")
-print("="*80)
+search_time = time.time() - t0
+avg_recall = np.mean(recalls) * 100
+p50 = np.percentile(latencies, 50)
+p90 = np.percentile(latencies, 90)
+p99 = np.percentile(latencies, 99)
+qps = NUM_QUERIES / search_time
 
-print("\n✓ Optimized disk-based SPANN test complete!")
-print(f"✓ Index saved to: {INDEX_DIR}_*")
-print("✓ Target: <10ms latency")
-print("✓ Optimizations: Batch I/O, mmap, LRU cache")
-print("✓ Ready for billion-scale embeddings!")
+print(f"\n{'='*80}")
+print("RESULTS")
+print("="*80)
+print(f"Latency:")
+print(f"  p50: {p50:.2f}ms")
+print(f"  p90: {p90:.2f}ms {'✅' if p90 < 10 else '❌'} (target <10ms)")
+print(f"  p99: {p99:.2f}ms")
+print(f"\nRecall@10: {avg_recall:.1f}% {'✅' if avg_recall >= 90 else '❌'} (target ≥90%)")
+print(f"\nPerformance:")
+print(f"  QPS: {qps:.1f}")
+print(f"  Search time: {search_time:.1f}s")
+print(f"  Build time: {build_time:.1f}s ({build_time/60:.1f} min)")
+print(f"\nIndex stats:")
+print(f"  Clusters: {index.num_clusters}")
+print(f"  Disk usage: {disk_size/1024**3:.2f} GB")
+print(f"  Cache hit rate: {index._cache_hits/(index._cache_hits+index._cache_misses)*100:.1f}%")
+
+if p90 < 10 and avg_recall >= 90:
+    print(f"\n✅ SUCCESS: p90={p90:.2f}ms with {avg_recall:.1f}% recall on EBS!")
+else:
+    print(f"\n⚠️  Needs tuning:")
+    if p90 >= 10:
+        print(f"   - p90 too high: {p90:.2f}ms (target <10ms)")
+if p90 < 10 and avg_recall >= 90:
+    print(f"\n✅ SUCCESS: p90={p90:.2f}ms with {avg_recall:.1f}% recall on EBS!")
+else:
+    print(f"\n⚠️  Needs tuning:")
+    if p90 >= 10:
+        print(f"   - p90 too high: {p90:.2f}ms (target <10ms)")
+    if avg_recall < 90:
+        print(f"   - Recall too low: {avg_recall:.1f}% (target ≥90%)")
+
+print(f"\n{'='*80}")
+print(f"To cleanup: rm -rf {INDEX_DIR}")
+print("="*80)
