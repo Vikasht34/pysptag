@@ -67,7 +67,8 @@ for name, bq, use_rabitq in configs:
     disk_path = f'{INDEX_DIR}_{name}'
     
     # Build index
-    if os.path.exists(disk_path):
+    metadata_file = os.path.join(disk_path, 'metadata.pkl')
+    if os.path.exists(metadata_file):
         print(f"Loading existing index from {disk_path}...")
         t0 = time.time()
         index = SPANNDiskBased.load(disk_path)
