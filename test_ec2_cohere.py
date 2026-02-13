@@ -1,9 +1,11 @@
 """
-EC2 Test Script for Disk-Based SPANN on Cohere 1M
-Run this on EC2 with EBS storage for billion-scale testing
+EC2 Test Script for OPTIMIZED Disk-Based SPANN on Cohere 1M
+Uses Phase 1 optimizations: batch I/O + mmap + cache
 
 Dataset: Cohere 1M (768-dim embeddings)
 Format: HDF5
+
+Target: <10ms latency (from 22ms)
 
 Prerequisites:
 - EC2 instance with sufficient RAM (16GB+)
@@ -19,7 +21,7 @@ import time
 import sys
 import os
 sys.path.insert(0, '.')
-from src.index.spann_disk import SPANNDiskBased
+from src.index.spann_disk_optimized import SPANNDiskOptimized
 
 def get_dir_size(path):
     """Get directory size in bytes"""
@@ -69,27 +71,24 @@ for name, bq, use_rabitq in configs:
     # Build index
     metadata_file = os.path.join(disk_path, 'metadata.pkl')
     if os.path.exists(metadata_file):
-        print(f"Loading existing index from {disk_path}...")
-        t0 = time.time()
-        index = SPANNDiskBased.load(disk_path)
-        load_time = time.time() - t0
-        print(f"✓ Loaded in {load_time:.2f}s")
-    else:
-        print(f"Building new index...")
-        t0 = time.time()
-        index = SPANNDiskBased(
-            dim=768,  # Cohere dimension
-            target_posting_size=5000,
-            replica_count=6,
-            bq=bq,
-            use_rabitq=use_rabitq,
-            metric='Cosine',  # Cohere uses cosine similarity
-            tree_type='KDT',  # KDTree is 3× faster than BKTree
-            disk_path=disk_path
-        )
-        index.build(base)
-        build_time = time.time() - t0
-        print(f"✓ Built in {build_time:.2f}s")
+        print(f"Note: Optimized version doesn't support loading yet, rebuilding...")
+    
+    print(f"Building optimized index...")
+    t0 = time.time()
+    index = SPANNDiskOptimized(
+        dim=768,  # Cohere dimension
+        target_posting_size=5000,
+        replica_count=6,
+        bq=bq,
+        use_rabitq=use_rabitq,
+        metric='Cosine',  # Cohere uses cosine similarity
+        tree_type='KDT',  # KDTree is 3× faster than BKTree
+        disk_path=disk_path,
+        cache_size=256  # Larger cache for better hit rate
+    )
+    index.build(base)
+    build_time = time.time() - t0
+    print(f"✓ Built in {build_time:.2f}s")
     
     # Check disk usage
     disk_size = get_dir_size(disk_path)
@@ -132,6 +131,9 @@ for name, bq, use_rabitq in configs:
     print(f"Latency: p50={p50:.2f}ms, p90={p90:.2f}ms, p99={p99:.2f}ms")
     print(f"Recall@10: {avg_recall:.2f}%")
     
+    # Print cache stats
+    index.print_cache_stats()
+    
     results.append({
         'config': name,
         'disk_mb': disk_size/1024**2,
@@ -145,14 +147,18 @@ for name, bq, use_rabitq in configs:
 
 # Summary
 print("\n" + "="*80)
-print("SUMMARY: Disk-Based SPANN on Cohere 1M (EC2)")
+print("SUMMARY: OPTIMIZED Disk-Based SPANN on Cohere 1M (EC2)")
 print("="*80)
+print("Phase 1 Optimizations: Batch I/O + mmap + cache")
+print()
 print(f"{'Config':<12} {'Disk(MB)':<10} {'QPS':<8} {'p50(ms)':<8} {'p90(ms)':<8} {'p99(ms)':<8} {'Recall':<8}")
 print("-"*80)
 for r in results:
     print(f"{r['config']:<12} {r['disk_mb']:<10.1f} {r['qps']:<8.1f} {r['p50']:<8.2f} {r['p90']:<8.2f} {r['p99']:<8.2f} {r['recall']:<8.2f}%")
 print("="*80)
 
-print("\n✓ Disk-based SPANN test complete!")
+print("\n✓ Optimized disk-based SPANN test complete!")
 print(f"✓ Index saved to: {INDEX_DIR}_*")
+print("✓ Target: <10ms latency")
+print("✓ Optimizations: Batch I/O, mmap, LRU cache")
 print("✓ Ready for billion-scale embeddings!")
