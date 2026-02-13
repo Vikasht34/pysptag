@@ -1,9 +1,12 @@
 """
 RNG - Relative Neighborhood Graph
 Direct Python port from SPTAG C++ implementation
+Supports L2, InnerProduct, and Cosine metrics
 """
 import numpy as np
-from typing import List, Tuple
+from typing import List, Tuple, Literal
+
+MetricType = Literal['L2', 'IP', 'Cosine']
 
 
 class RNG:
@@ -18,11 +21,23 @@ class RNG:
     def __init__(
         self,
         neighborhood_size: int = 32,
-        rng_factor: float = 1.0
+        rng_factor: float = 1.0,
+        metric: MetricType = 'L2'
     ):
         self.neighborhood_size = neighborhood_size
         self.rng_factor = rng_factor
+        self.metric = metric
         self.graph: List[np.ndarray] = []
+    
+    def _compute_distance(self, a: np.ndarray, b: np.ndarray) -> float:
+        """Compute distance based on metric"""
+        if self.metric == 'L2':
+            return np.sum((a - b) ** 2)
+        elif self.metric == 'IP':
+            return -np.dot(a, b)
+        elif self.metric == 'Cosine':
+            return -np.dot(a, b)
+        return 0.0
         
     def build(self, data: np.ndarray, init_graph: List[np.ndarray] = None):
         """
@@ -69,13 +84,13 @@ class RNG:
                 break
             
             candidate_vec = data[candidate]
-            candidate_dist = np.sum((node_vec - candidate_vec) ** 2)
+            candidate_dist = self._compute_distance(node_vec, candidate_vec)
             
             # Check RNG condition against existing neighbors
             is_good = True
             for neighbor in neighbors:
                 neighbor_vec = data[neighbor]
-                neighbor_dist = np.sum((candidate_vec - neighbor_vec) ** 2)
+                neighbor_dist = self._compute_distance(candidate_vec, neighbor_vec)
                 
                 # RNG condition: d(node, candidate) should be <= RNGFactor * d(neighbor, candidate)
                 if self.rng_factor * neighbor_dist < candidate_dist:
@@ -119,7 +134,7 @@ class RNG:
                 break
             
             current_vec = data[current]
-            current_dist = np.sum((node_vec - current_vec) ** 2)
+            current_dist = self._compute_distance(node_vec, current_vec)
             
             if current_dist > insert_dist or (insert_dist == current_dist and insert_node < current):
                 # Insert here
@@ -132,8 +147,8 @@ class RNG:
                         break
                     
                     current_vec = data[current]
-                    current_to_node = np.sum((current_vec - node_vec) ** 2)
-                    current_to_insert = np.sum((current_vec - insert_vec) ** 2)
+                    current_to_node = self._compute_distance(current_vec, node_vec)
+                    current_to_insert = self._compute_distance(current_vec, insert_vec)
                     
                     if current_to_node <= current_to_insert:
                         neighbors[k], current = current, neighbors[k]
@@ -143,7 +158,7 @@ class RNG:
                 break
             
             # Check if insert_node violates RNG with current
-            current_to_insert = np.sum((current_vec - insert_vec) ** 2)
+            current_to_insert = self._compute_distance(current_vec, insert_vec)
             if current_to_insert < insert_dist:
                 break
     
@@ -176,7 +191,7 @@ class RNG:
         candidates = []
         
         # Start from entry point
-        dist = np.sum((query - data[entry_point]) ** 2)
+        dist = self._compute_distance(query, data[entry_point])
         candidates.append((dist, entry_point))
         visited.add(entry_point)
         
@@ -194,13 +209,13 @@ class RNG:
                     continue
                 
                 visited.add(neighbor)
-                neighbor_dist = np.sum((query - data[neighbor]) ** 2)
+                neighbor_dist = self._compute_distance(query, data[neighbor])
                 candidates.append((neighbor_dist, neighbor))
         
         # Get top-k from visited
         results = []
         for node in visited:
-            dist = np.sum((query - data[node]) ** 2)
+            dist = self._compute_distance(query, data[node])
             results.append((dist, node))
         
         results.sort()
