@@ -18,10 +18,11 @@ def bktree_rng_search(
     rng_graph: list,
     k: int,
     metric: str = 'L2',
-    initial_candidates: int = 10
+    initial_candidates: int = 100,
+    max_check: int = 500
 ) -> np.ndarray:
     """
-    Combined BKTree + RNG search
+    Combined BKTree + RNG search (SPTAG-style with early termination)
     
     Args:
         query: Query vector
@@ -32,6 +33,7 @@ def bktree_rng_search(
         k: Number of nearest centroids to find
         metric: Distance metric
         initial_candidates: Number of candidates from BKTree
+        max_check: Maximum nodes to check (early termination)
     
     Returns:
         Indices of k nearest centroids
@@ -43,48 +45,51 @@ def bktree_rng_search(
             return -np.dot(a, b)
         return 0.0
     
-    # Step 1: Get initial candidates from BKTree (fast)
-    bktree_candidates = []
+    # Step 1: Initialize BKTree search with priority queue
+    spt_queue = []  # Priority queue for tree nodes
+    visited = set()
     
+    # Add root nodes to queue
     for tree_idx in range(len(tree_start)):
         root_idx = tree_start[tree_idx]
-        stack = [(root_idx, 0.0)]
+        node = bktree_nodes[root_idx]
         
-        while stack:
-            node_idx, _ = stack.pop()
-            node = bktree_nodes[node_idx]
+        if node.centerid >= 0 and node.centerid < len(centroids):
+            dist = compute_dist(query, centroids[node.centerid])
+            heapq.heappush(spt_queue, (dist, root_idx))
+    
+    # Step 2: Search BKTree with early termination
+    ng_queue = []  # Candidates for result
+    checked_leaves = 0
+    
+    while spt_queue and checked_leaves < initial_candidates:
+        dist, node_idx = heapq.heappop(spt_queue)
+        node = bktree_nodes[node_idx]
+        
+        # If leaf node, add to candidates
+        if node.childStart < 0:
+            if node.centerid >= 0 and node.centerid < len(centroids) and node.centerid not in visited:
+                visited.add(node.centerid)
+                heapq.heappush(ng_queue, (dist, node.centerid))
+                checked_leaves += 1
+        else:
+            # Add center to candidates
+            if node.centerid >= 0 and node.centerid < len(centroids) and node.centerid not in visited:
+                visited.add(node.centerid)
+                heapq.heappush(ng_queue, (dist, node.centerid))
             
-            center_id = node.centerid
-            if center_id >= 0 and center_id < len(centroids):
-                dist = compute_dist(query, centroids[center_id])
-                heapq.heappush(bktree_candidates, (dist, center_id))
-            
-            if node.childStart >= 0:
-                for child_idx in range(node.childStart, node.childEnd):
-                    stack.append((child_idx, 0.0))
+            # Add children to queue
+            for child_idx in range(node.childStart, node.childEnd):
+                child_node = bktree_nodes[child_idx]
+                if child_node.centerid >= 0 and child_node.centerid < len(centroids):
+                    child_dist = compute_dist(query, centroids[child_node.centerid])
+                    heapq.heappush(spt_queue, (child_dist, child_idx))
     
-    # Get top initial_candidates from BKTree
-    initial_set = set()
-    initial_list = []
-    while bktree_candidates and len(initial_list) < initial_candidates:
-        dist, center_id = heapq.heappop(bktree_candidates)
-        if center_id not in initial_set:
-            initial_set.add(center_id)
-            initial_list.append((dist, center_id))
+    # Step 3: Expand using RNG graph
+    checked = len(visited)
     
-    if not initial_list:
-        return np.array([], dtype=np.int32)
-    
-    # Step 2: Expand using RNG graph (greedy search)
-    visited = initial_set.copy()
-    candidates = initial_list.copy()
-    heapq.heapify(candidates)
-    
-    checked = 0
-    max_check = min(len(centroids), k * 10)  # Check at most 10x k nodes
-    
-    while candidates and checked < max_check:
-        dist, current = heapq.heappop(candidates)
+    while ng_queue and checked < max_check:
+        dist, current = heapq.heappop(ng_queue)
         checked += 1
         
         # Check RNG neighbors
@@ -96,7 +101,21 @@ def bktree_rng_search(
                 
                 visited.add(neighbor)
                 neighbor_dist = compute_dist(query, centroids[neighbor])
-                heapq.heappush(candidates, (neighbor_dist, neighbor))
+                heapq.heappush(ng_queue, (neighbor_dist, neighbor))
+    
+    # Step 4: Return top-k
+    result = []
+    temp_queue = []
+    while ng_queue and len(result) < k:
+        dist, node_id = heapq.heappop(ng_queue)
+        result.append(node_id)
+        temp_queue.append((dist, node_id))
+    
+    # Put back remaining for potential future use
+    for item in temp_queue:
+        heapq.heappush(ng_queue, item)
+    
+    return np.array(result[:k], dtype=np.int32)
     
     # Step 3: Get top-k from all visited nodes
     final_results = []
