@@ -22,14 +22,23 @@ class SPANNRaBitQReplica:
         kmeans_k: int = 32,
         bq: int = 4,
         use_rabitq: bool = True,  # Enable/disable RaBitQ quantization
-        metric: MetricType = 'L2'  # Distance metric
+        metric: MetricType = 'L2',  # Distance metric
+        tree_type: str = 'BKT'  # 'BKT' or 'KDT'
     ):
         self.dim = dim
         self.target_posting_size = target_posting_size
         self.replica_count = replica_count
         self.use_rabitq = use_rabitq
         self.metric = metric
-        self.bktree = BKTree(num_trees=num_trees, kmeans_k=kmeans_k)
+        self.tree_type = tree_type
+        
+        if tree_type == 'BKT':
+            from ..core.bktree import BKTree
+            self.tree = BKTree(num_trees=num_trees, kmeans_k=kmeans_k)
+        else:  # KDT
+            from ..core.kdtree import KDTree
+            self.tree = KDTree(num_trees=num_trees)
+            
         self.rng = RNG(neighborhood_size=32, metric=metric)
         self.bq = bq
         
@@ -114,9 +123,9 @@ class SPANNRaBitQReplica:
         else:
             print(f"  Stored: {total_original / 1024 / 1024:.2f} MB (no compression)")
         
-        # Step 4: Build BKTree + RNG on centroids
-        print(f"[4/5] Building BKTree+RNG on centroids...")
-        self.bktree.build(self.centroids)
+        # Step 4: Build tree + RNG on centroids
+        print(f"[4/5] Building {self.tree_type}+RNG on centroids...")
+        self.tree.build(self.centroids)
         self.rng.build(self.centroids)
         
         msg = "quantization" if self.use_rabitq else "no quantization"
@@ -184,22 +193,33 @@ class SPANNRaBitQReplica:
                search_internal_result_num: int = 64, max_check: int = 4096,
                max_vectors_per_posting: int = None):  # None = no limit
         """Search using quantized postings with replication"""
-        # Find nearest centroids using BKTree + RNG (SPTAG approach)
+        # Find nearest centroids using tree + RNG
         if hasattr(self, 'rng') and len(self.rng.graph) > 0:
-            # Use combined BKTree + RNG search
-            from ..core.bktree_rng_search import bktree_rng_search
-            nearest_centroids = bktree_rng_search(
-                query, self.centroids, self.bktree.tree_roots,
-                self.bktree.tree_start, self.rng.graph,
-                search_internal_result_num, self.metric
-            )
+            # Use combined tree + RNG search
+            if self.tree_type == 'BKT':
+                from ..core.bktree_rng_search import bktree_rng_search
+                nearest_centroids = bktree_rng_search(
+                    query, self.centroids, self.tree.tree_roots,
+                    self.tree.tree_start, self.rng.graph,
+                    search_internal_result_num, self.metric
+                )
+            else:  # KDT
+                # Use KDTree search directly
+                nearest_centroids = self.tree.search(
+                    query, self.centroids, search_internal_result_num, self.metric
+                )
         else:
-            # Use BKTree only
-            from ..core.bktree_search import bktree_search_centroids
-            nearest_centroids = bktree_search_centroids(
-                query, self.centroids, self.bktree.tree_roots,
-                self.bktree.tree_start, search_internal_result_num, self.metric
-            )
+            # Use tree only
+            if self.tree_type == 'BKT':
+                from ..core.bktree_search import bktree_search_centroids
+                nearest_centroids = bktree_search_centroids(
+                    query, self.centroids, self.tree.tree_roots,
+                    self.tree.tree_start, search_internal_result_num, self.metric
+                )
+            else:  # KDT
+                nearest_centroids = self.tree.search(
+                    query, self.centroids, search_internal_result_num, self.metric
+                )
         
         # Search postings with deduplication
         seen = set()
