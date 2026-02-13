@@ -43,6 +43,10 @@ for bq in [1, 2, 4]:
     )
     index.build(base)
     build_time = time.time() - t0
+    
+    # Print posting stats
+    posting_sizes = [len(p) for p in index.posting_lists]
+    print(f"Posting sizes: min={min(posting_sizes)}, max={max(posting_sizes)}, avg={sum(posting_sizes)/len(posting_sizes):.0f}")
     print(f"Build time: {build_time:.2f}s")
     
     # Search
@@ -53,7 +57,7 @@ for bq in [1, 2, 4]:
         if i % 10 == 0:
             print(f"  Query {i}/100...")
         q_start = time.time()
-        dists, indices = index.search(query, base, k=10, search_internal_result_num=128, max_check=4000)
+        dists, indices = index.search(query, base, k=10, search_internal_result_num=256, max_check=8000)
         latencies.append((time.time() - q_start) * 1000)
         
         if len(indices) == 0:

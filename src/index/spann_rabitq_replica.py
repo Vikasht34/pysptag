@@ -139,8 +139,11 @@ class SPANNRaBitQReplica:
                 end = min(start + batch_size, n)
                 batch = data[start:end]
                 
-                # Compute distances for batch: (batch_size, k)
-                dists = np.sum((batch[:, None, :] - centers[None, :, :]) ** 2, axis=2)
+                # Compute distances for batch: (batch_size, k) - use correct metric
+                if self.metric == 'L2':
+                    dists = np.sum((batch[:, None, :] - centers[None, :, :]) ** 2, axis=2)
+                elif self.metric in ('IP', 'Cosine'):
+                    dists = -np.dot(batch, centers.T)  # Negative for minimization
                 dists += lambda_penalty * counts[None, :]
                 
                 batch_labels = np.argmin(dists, axis=1)
