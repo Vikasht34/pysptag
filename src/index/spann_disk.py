@@ -118,10 +118,9 @@ class SPANNDiskBased:
         print(f"  Compressed: {total_compressed/1024**2:.2f} MB")
         print(f"  Savings: {(1 - total_compressed/total_original)*100:.1f}%")
         
-        # Step 4: Build BKTree+RNG on centroids (keep in memory)
-        print("[4/5] Building BKTree+RNG on centroids...")
+        # Step 4: Build BKTree on centroids (for fast centroid search)
+        print("[4/5] Building BKTree on centroids...")
         self.bktree = BKTree(self.centroids)
-        self.rng = RNG(self.centroids, metric=self.metric)
         
         # Step 5: Save metadata
         print("[5/5] Saving metadata...")
@@ -132,8 +131,7 @@ class SPANNDiskBased:
             'bq': self.bq,
             'metric': self.metric,
             'centroids': self.centroids,
-            'bktree': self.bktree,
-            'rng': self.rng
+            'bktree': self.bktree
         }
         with open(os.path.join(self.disk_path, 'metadata.pkl'), 'wb') as f:
             pickle.dump(metadata, f)
@@ -161,7 +159,6 @@ class SPANNDiskBased:
         index.num_clusters = metadata['num_clusters']
         index.centroids = metadata['centroids']
         index.bktree = metadata['bktree']
-        index.rng = metadata['rng']
         
         print(f"✓ Index loaded: {index.num_clusters} clusters, {len(index.centroids)} centroids")
         return index
@@ -187,7 +184,7 @@ class SPANNDiskBased:
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Search with disk-based posting lists"""
         
-        # Find nearest centroids
+        # Find nearest centroids (brute force is fast for <10K centroids)
         if self.metric == 'L2':
             centroid_dists = np.sum((self.centroids - query) ** 2, axis=1)
         elif self.metric == 'IP':
