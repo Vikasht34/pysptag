@@ -131,10 +131,13 @@ class SPANNRaBitQReplica:
         
         for iteration in range(max_iter):
             # Vectorized distance computation (batch processing)
-            # Smaller batch for L2 to avoid huge intermediate arrays
-            batch_size = 1000 if self.metric == 'L2' else 10000
+            batch_size = 10000
             labels = np.zeros(n, dtype=np.int32)
             counts = np.zeros(k, dtype=np.int32)
+            
+            # Precompute for optimized L2
+            if self.metric == 'L2':
+                centers_sq = np.sum(centers ** 2, axis=1)  # (k,)
             
             for start in range(0, n, batch_size):
                 end = min(start + batch_size, n)
@@ -142,8 +145,10 @@ class SPANNRaBitQReplica:
                 
                 # Compute distances for batch: (batch_size, k) - use correct metric
                 if self.metric == 'L2':
-                    # Use original formula (simpler, works well)
-                    dists = np.sum((batch[:, None, :] - centers[None, :, :]) ** 2, axis=2)
+                    # Optimized: ||a-b||^2 = ||a||^2 + ||b||^2 - 2*a.b
+                    # Avoids creating (batch, k, dim) intermediate array
+                    batch_sq = np.sum(batch ** 2, axis=1, keepdims=True)  # (batch, 1)
+                    dists = batch_sq + centers_sq - 2 * np.dot(batch, centers.T)
                 elif self.metric in ('IP', 'Cosine'):
                     dists = -np.dot(batch, centers.T)  # Negative for minimization
                 dists += lambda_penalty * counts[None, :]
