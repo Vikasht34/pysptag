@@ -17,3 +17,10 @@ data/
 *.hdf5
 *.tar.gz
 *.zip
+
+# Test artifacts
+test_*/
+profile_*/
+sift*/
+*_disk_sptag/
+*.log
