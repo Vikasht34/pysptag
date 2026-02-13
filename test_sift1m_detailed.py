@@ -77,24 +77,31 @@ for i in range(num_queries):
     
     # === STAGE 1: Centroid Search ===
     t0 = time.perf_counter()
-    # Always use faiss for fast centroid search (RNG graph search is too slow)
-    import faiss
-    if not hasattr(index, '_centroid_index'):
-        index._centroid_index = faiss.IndexFlatL2(index.centroids.shape[1])
-        index._centroid_index.add(index.centroids.astype(np.float32))
-    _, nearest_centroids = index._centroid_index.search(query.reshape(1, -1).astype(np.float32), 64)
-    nearest_centroids = nearest_centroids[0]
+    if hasattr(index, 'rng') and len(index.rng.graph) > 0 and index.rng.graph[0][0] >= 0:
+        # Use BKTree+RNG search (SPTAG-style with early termination)
+        from src.core.bktree_rng_search import bktree_rng_search
+        nearest_centroids = bktree_rng_search(
+            query, index.centroids, index.tree.tree_roots,
+            index.tree.tree_start, index.rng.graph,
+            64, index.metric, initial_candidates=100, max_check=500
+        )
+    else:
+        # Fallback to faiss
+        import faiss
+        if not hasattr(index, '_centroid_index'):
+            index._centroid_index = faiss.IndexFlatL2(index.centroids.shape[1])
+            index._centroid_index.add(index.centroids.astype(np.float32))
+        _, nearest_centroids = index._centroid_index.search(query.reshape(1, -1).astype(np.float32), 64)
+        nearest_centroids = nearest_centroids[0]
     t_centroid = (time.perf_counter() - t0) * 1000
     
     # === STAGE 2: Load Posting Lists ===
     t0 = time.perf_counter()
     candidates = []
-    max_vectors_per_posting = 200  # SPTAG limit
     for cid in nearest_centroids[:min(max_check, len(nearest_centroids))]:
         posting = index._load_posting_mmap(cid)
         if posting is not None and posting[0] is not None:
-            # Limit vectors per posting
-            candidates.extend(posting[0][:max_vectors_per_posting])
+            candidates.extend(posting[0])  # Load ALL vectors
     t_posting = (time.perf_counter() - t0) * 1000
     
     # === STAGE 3: Distance Computation ===

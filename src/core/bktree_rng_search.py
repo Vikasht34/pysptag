@@ -49,14 +49,10 @@ def bktree_rng_search(
     spt_queue = []  # Priority queue for tree nodes
     visited = set()
     
-    # Add root nodes to queue
+    # Add root nodes to queue (always add, even if centerid is out of bounds)
     for tree_idx in range(len(tree_start)):
         root_idx = tree_start[tree_idx]
-        node = bktree_nodes[root_idx]
-        
-        if node.centerid >= 0 and node.centerid < len(centroids):
-            dist = compute_dist(query, centroids[node.centerid])
-            heapq.heappush(spt_queue, (dist, root_idx))
+        heapq.heappush(spt_queue, (0.0, root_idx))  # Distance 0 for root
     
     # Step 2: Search BKTree with early termination
     ng_queue = []  # Candidates for result
@@ -103,21 +99,7 @@ def bktree_rng_search(
                 neighbor_dist = compute_dist(query, centroids[neighbor])
                 heapq.heappush(ng_queue, (neighbor_dist, neighbor))
     
-    # Step 4: Return top-k
-    result = []
-    temp_queue = []
-    while ng_queue and len(result) < k:
-        dist, node_id = heapq.heappop(ng_queue)
-        result.append(node_id)
-        temp_queue.append((dist, node_id))
-    
-    # Put back remaining for potential future use
-    for item in temp_queue:
-        heapq.heappush(ng_queue, item)
-    
-    return np.array(result[:k], dtype=np.int32)
-    
-    # Step 3: Get top-k from all visited nodes
+    # Step 4: Return top-k from all visited nodes
     final_results = []
     for center_id in visited:
         dist = compute_dist(query, centroids[center_id])
