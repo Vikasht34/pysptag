@@ -1,11 +1,12 @@
 """
 SPANN with RaBitQ - EXACT C++ implementation with replication
 Key: Each vector assigned to multiple posting lists (replicaCount=8)
+Supports L2, InnerProduct, and Cosine metrics
 """
 import numpy as np
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Literal
 from ..core.bktree import BKTree
-from ..core.rng import RNG
+from ..core.rng import RNG, MetricType
 from ..quantization.rabitq import RaBitQ
 
 
@@ -20,14 +21,16 @@ class SPANNRaBitQReplica:
         num_trees: int = 1,
         kmeans_k: int = 32,
         bq: int = 4,
-        use_rabitq: bool = True  # Enable/disable RaBitQ quantization
+        use_rabitq: bool = True,  # Enable/disable RaBitQ quantization
+        metric: MetricType = 'L2'  # Distance metric
     ):
         self.dim = dim
         self.target_posting_size = target_posting_size
         self.replica_count = replica_count
         self.use_rabitq = use_rabitq
+        self.metric = metric
         self.bktree = BKTree(num_trees=num_trees, kmeans_k=kmeans_k)
-        self.rng = RNG(neighborhood_size=32)
+        self.rng = RNG(neighborhood_size=32, metric=metric)
         self.bq = bq
         
         self.centroids: Optional[np.ndarray] = None
@@ -53,8 +56,13 @@ class SPANNRaBitQReplica:
         self.posting_lists = [[] for _ in range(self.num_clusters)]
         
         for i in range(n):
-            # Find replica_count nearest centroids
-            dists = np.sum((self.centroids - data[i]) ** 2, axis=1)
+            # Find replica_count nearest centroids (use correct metric)
+            if self.metric == 'L2':
+                dists = np.sum((self.centroids - data[i]) ** 2, axis=1)
+            elif self.metric == 'IP':
+                dists = -np.dot(self.centroids, data[i])
+            elif self.metric == 'Cosine':
+                dists = -np.dot(self.centroids, data[i])
             nearest = np.argsort(dists)[:self.replica_count]
             
             # Add to all replica posting lists
@@ -168,8 +176,13 @@ class SPANNRaBitQReplica:
     def search(self, query: np.ndarray, data: np.ndarray, k: int = 10, 
                search_internal_result_num: int = 64, max_check: int = 4096):
         """Search using quantized postings with replication"""
-        # Find nearest centroids
-        centroid_dists = np.sum((self.centroids - query) ** 2, axis=1)
+        # Find nearest centroids (use correct metric)
+        if self.metric == 'L2':
+            centroid_dists = np.sum((self.centroids - query) ** 2, axis=1)
+        elif self.metric == 'IP':
+            centroid_dists = -np.dot(self.centroids, query)
+        elif self.metric == 'Cosine':
+            centroid_dists = -np.dot(self.centroids, query)
         nearest_centroids = np.argsort(centroid_dists)[:search_internal_result_num]
         
         # Search postings with deduplication
