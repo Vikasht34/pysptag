@@ -75,18 +75,18 @@ class SPANNDiskOptimized:
         os.makedirs(os.path.join(disk_path, 'postings'), exist_ok=True)
     
     def build(self, data: np.ndarray):
-        """Build index with pluggable clustering"""
+        """Build index with SPTAG-style clustering"""
         n, dim = data.shape
         print(f"Building optimized SPANN for {n} vectors")
         print(f"  Clustering: {self.clusterer.__class__.__name__}")
         print(f"  Posting limit: {self.target_posting_size} vectors")
         print(f"  Replica count: {self.replica_count}")
         
-        # Step 1: Cluster data
+        # Step 1: Cluster data (use ratio-based for SPTAG style)
         print("[1/5] Clustering...")
-        target_clusters = max(1, n // self.target_posting_size)
-        self.centroids, labels = self.clusterer.cluster(data, target_clusters)
+        self.centroids, labels = self.clusterer.cluster(data, target_clusters=None)  # None = use ratio
         self.num_clusters = len(self.centroids)
+        print(f"  Created {self.num_clusters} clusters ({self.num_clusters/n*100:.2f}% of data)")
         
         # Step 2: Assign with replicas and posting limits
         print(f"[2/5] Assigning vectors to {self.num_clusters} centroids...")
