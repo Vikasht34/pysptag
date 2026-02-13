@@ -162,16 +162,11 @@ class SPANNRaBitQReplica:
                 else:
                     new_centers[j] = centers[j]
             
-            # Check convergence
+            # Check convergence (L2 distance between old and new centroids)
             diff = np.sum((new_centers - centers) ** 2)
             centers = new_centers
             if diff < 1e-3:
                 print(f"  Converged at iteration {iteration+1}")
-                break
-            
-            diff = np.sum((new_centers - centers) ** 2)
-            centers = new_centers
-            if diff < 1e-3:
                 break
         
         return labels, centers
