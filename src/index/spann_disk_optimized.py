@@ -1,9 +1,6 @@
 """
-Optimized disk-based SPANN with Phase 1 + Phase 2 optimizations:
-Phase 1: Batch I/O + mmap + cache
-Phase 2: Parallel search
-
-Target: <10ms latency (from 22ms)
+Optimized disk-based SPANN with pluggable clustering algorithms.
+Supports k-means and hierarchical (SPTAG-style) clustering.
 """
 import numpy as np
 import os
@@ -14,23 +11,25 @@ from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
 from ..core.rng import RNG, MetricType
 from ..quantization.rabitq_numba import RaBitQNumba
+from ..clustering import ClusteringAlgorithm, KMeansClustering, HierarchicalClustering
 
 
 class SPANNDiskOptimized:
-    """Optimized disk-based SPANN with batch I/O, mmap, cache, and parallel search"""
+    """Optimized disk-based SPANN with pluggable clustering"""
     
     def __init__(
         self,
         dim: int,
-        target_posting_size: int = 10000,
+        target_posting_size: int = 118,
         replica_count: int = 8,
         bq: int = 4,
         use_rabitq: bool = True,
         metric: MetricType = 'L2',
         tree_type: str = 'KDT',
         disk_path: str = './spann_index',
-        cache_size: int = 128,  # Cache 128 hot postings
-        num_threads: int = 4  # Parallel search threads
+        cache_size: int = 128,
+        num_threads: int = 1,
+        clustering: str = 'hierarchical'  # 'kmeans' or 'hierarchical'
     ):
         self.dim = dim
         self.target_posting_size = target_posting_size
@@ -42,6 +41,19 @@ class SPANNDiskOptimized:
         self.disk_path = disk_path
         self.cache_size = cache_size
         self.num_threads = num_threads
+        
+        # Select clustering algorithm
+        if clustering == 'hierarchical':
+            self.clusterer = HierarchicalClustering(
+                select_threshold=6,
+                split_threshold=25,
+                ratio=0.01,
+                kmeans_k=32,
+                leaf_size=8,
+                metric=metric
+            )
+        else:  # kmeans
+            self.clusterer = KMeansClustering(metric=metric)
         
         # Create tree
         if tree_type == 'BKT':
@@ -63,31 +75,39 @@ class SPANNDiskOptimized:
         os.makedirs(os.path.join(disk_path, 'postings'), exist_ok=True)
     
     def build(self, data: np.ndarray):
-        """Build index with optimized binary format"""
+        """Build index with pluggable clustering"""
         n, dim = data.shape
-        print(f"Building optimized disk-based SPANN for {n} vectors")
+        print(f"Building optimized SPANN for {n} vectors")
+        print(f"  Clustering: {self.clusterer.__class__.__name__}")
+        print(f"  Posting limit: {self.target_posting_size} vectors")
+        print(f"  Replica count: {self.replica_count}")
         
-        # Step 1: Fast clustering
+        # Step 1: Cluster data
         print("[1/5] Clustering...")
-        self.num_clusters = max(1, n // self.target_posting_size)
-        labels, self.centroids = self._fast_kmeans(data, self.num_clusters)
+        target_clusters = max(1, n // self.target_posting_size)
+        self.centroids, labels = self.clusterer.cluster(data, target_clusters)
+        self.num_clusters = len(self.centroids)
         
-        # Step 2: Assign to multiple centroids
-        print(f"[2/5] Assigning vectors to {self.replica_count} nearest centroids...")
-        if self.metric == 'L2':
-            data_sq = np.sum(data ** 2, axis=1, keepdims=True)
-            centroids_sq = np.sum(self.centroids ** 2, axis=1)
-            dists = data_sq + centroids_sq - 2 * np.dot(data, self.centroids.T)
-        elif self.metric in ('IP', 'Cosine'):
-            dists = -np.dot(data, self.centroids.T)
+        # Step 2: Assign with replicas and posting limits
+        print(f"[2/5] Assigning vectors to {self.num_clusters} centroids...")
+        self.posting_lists, replica_counts = self.clusterer.assign_with_replicas(
+            data, self.centroids, self.replica_count, self.target_posting_size
+        )
+        print(f"  Clustering: {self.clusterer.__class__.__name__}")
+        print(f"  Posting limit: {self.target_posting_size} vectors")
+        print(f"  Replica count: {self.replica_count}")
         
-        nearest_centroids = np.argsort(dists, axis=1)[:, :self.replica_count]
+        # Step 1: Cluster data
+        print("[1/5] Clustering...")
+        target_clusters = max(1, n // self.target_posting_size)
+        self.centroids, labels = self.clusterer.cluster(data, target_clusters)
+        self.num_clusters = len(self.centroids)
         
-        # Build posting lists
-        self.posting_lists = [[] for _ in range(self.num_clusters)]
-        for vec_id, centroid_ids in enumerate(nearest_centroids):
-            for centroid_id in centroid_ids:
-                self.posting_lists[centroid_id].append(vec_id)
+        # Step 2: Assign with replicas and posting limits
+        print(f"[2/5] Assigning vectors to {self.num_clusters} centroids...")
+        self.posting_lists, replica_counts = self.clusterer.assign_with_replicas(
+            data, self.centroids, self.replica_count, self.target_posting_size
+        )
         
         # Step 3: Save posting lists in binary format (mmap-friendly)
         print("[3/5] Saving posting lists in binary format...")
