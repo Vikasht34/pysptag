@@ -350,41 +350,41 @@ class SPANNDiskOptimized:
             mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
             
             # Read header
-            num_vecs, code_dim, is_unquantized = struct.unpack('III', mm[offset:offset+12])
+            num_vecs_total, code_dim, is_unquantized = struct.unpack('III', mm[offset:offset+12])
             
-            # Limit vectors to load
+            # Limit vectors to load (but read RaBitQ from full posting)
+            num_vecs_to_load = num_vecs_total
             if max_vectors is not None:
-                num_vecs = min(num_vecs, max_vectors)
+                num_vecs_to_load = min(num_vecs_total, max_vectors)
             
             # Track bytes read
-            bytes_to_read = 12 + num_vecs * 4
+            bytes_to_read = 12 + num_vecs_to_load * 4
             if is_unquantized:
-                bytes_to_read += num_vecs * code_dim * 4
+                bytes_to_read += num_vecs_to_load * code_dim * 4
             else:
-                bytes_to_read += num_vecs * code_dim
+                bytes_to_read += num_vecs_to_load * code_dim
             self._bytes_read += bytes_to_read
             
-            # Read posting IDs
+            # Read posting IDs (only what we need)
             pos = offset + 12
-            posting_ids = np.frombuffer(mm, dtype=np.int32, count=num_vecs, offset=pos)
-            pos += num_vecs * 4
+            posting_ids = np.frombuffer(mm, dtype=np.int32, count=num_vecs_to_load, offset=pos)
+            pos_ids_end = offset + 12 + num_vecs_total * 4  # Full IDs section
             
-            # Read codes
+            # Read codes (only what we need)
             if is_unquantized:
-                codes = np.frombuffer(mm, dtype=np.float32, count=num_vecs * code_dim, offset=pos)
-                codes = codes.reshape(num_vecs, code_dim)
+                codes = np.frombuffer(mm, dtype=np.float32, count=num_vecs_to_load * code_dim, offset=pos_ids_end)
+                codes = codes.reshape(num_vecs_to_load, code_dim)
                 rabitq = None
             else:
-                code_size = num_vecs * code_dim
-                codes = np.frombuffer(mm, dtype=np.uint8, count=code_size, offset=pos)
-                codes = codes.reshape(num_vecs, code_dim)
-                pos += code_size
+                codes = np.frombuffer(mm, dtype=np.uint8, count=num_vecs_to_load * code_dim, offset=pos_ids_end)
+                codes = codes.reshape(num_vecs_to_load, code_dim)
                 
-                # Read RaBitQ params and restore to shared instance
-                rabitq_size = struct.unpack('I', mm[pos:pos+4])[0]
-                pos += 4
+                # Read RaBitQ params from AFTER full codes section
+                pos_rabitq = pos_ids_end + num_vecs_total * code_dim
+                rabitq_size = struct.unpack('I', mm[pos_rabitq:pos_rabitq+4])[0]
+                pos_rabitq += 4
                 import pickle
-                rabitq_params = pickle.loads(mm[pos:pos+rabitq_size])
+                rabitq_params = pickle.loads(mm[pos_rabitq:pos_rabitq+rabitq_size])
                 
                 # Copy params to shared instance
                 if self._shared_rabitq is not None:
@@ -422,12 +422,12 @@ class SPANNDiskOptimized:
                 self._offset_table.append((offset, size))
     
     
-    def _load_postings_batch(self, centroid_ids: list, max_vectors_per_posting: int = 200):
+    def _load_postings_batch(self, centroid_ids: list, max_vectors_per_posting: int = None):
         """Batch load multiple postings with vector limit (SPTAG-style)
         
         Args:
             centroid_ids: List of cluster IDs
-            max_vectors_per_posting: Max vectors to load per posting (default 200, SPTAG default)
+            max_vectors_per_posting: Max vectors to load per posting (None = load all)
         """
         postings = {}
         uncached = []
