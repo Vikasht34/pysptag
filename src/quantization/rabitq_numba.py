@@ -12,7 +12,7 @@ def compute_l2_distances(query, codes, centroid, scale, res_min):
     for i in prange(n):
         dist = 0.0
         for j in range(dim):
-            val = codes[i, j] * scale[j] + res_min[j] + centroid[j]
+            val = codes[i, j] * scale + res_min + centroid[j]
             diff = val - query[j]
             dist += diff * diff
         dists[i] = dist
@@ -27,7 +27,7 @@ def compute_ip_distances(query, codes, centroid, scale, res_min):
     for i in prange(n):
         dot = 0.0
         for j in range(dim):
-            val = codes[i, j] * scale[j] + res_min[j] + centroid[j]
+            val = codes[i, j] * scale + res_min + centroid[j]
             dot += val * query[j]
         dists[i] = -dot
     return dists
