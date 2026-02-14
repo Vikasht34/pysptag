@@ -537,10 +537,10 @@ class SPANNDiskOptimized:
                             local_indices = np.argpartition(dists, -search_k)[-search_k:]
                             local_indices = local_indices[np.argsort(-dists[local_indices])]
                 
-                # Collect results with deduplication
+                # Collect results with deduplication and bounds checking
                 for local_idx in local_indices:
                     global_id = posting_ids[local_idx]
-                    if global_id not in seen:
+                    if global_id not in seen and global_id < len(data):
                         seen.add(global_id)
                         all_indices.append(global_id)
                     if len(all_indices) >= max_check:
