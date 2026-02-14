@@ -21,23 +21,53 @@ import h5py
 from src.index.spann_disk_optimized import SPANNDiskOptimized
 
 # Data paths
-COHERE_DATA = '/data/cohere-wikipedia-768-angular.hdf5'
-SIFT_DATA = '/data/sift-128-euclidean.hdf5'
+COHERE_DATA = '/data/documents-1m.hdf5'
+SIFT_BASE = '/data/sift/sift_base.fvecs'
+SIFT_QUERY = '/data/sift/sift_query.fvecs'
+SIFT_GT = '/data/sift/sift_groundtruth.ivecs'
 COHERE_INDEX = '/mnt/nvme/spann_cohere_4bit'
 SIFT_INDEX = '/mnt/nvme/spann_sift_2bit'
 
+def read_fvecs(filename):
+    """Read .fvecs file"""
+    with open(filename, 'rb') as f:
+        data = []
+        while True:
+            dim_bytes = f.read(4)
+            if not dim_bytes:
+                break
+            dim = np.frombuffer(dim_bytes, dtype=np.int32)[0]
+            vec = np.frombuffer(f.read(dim * 4), dtype=np.float32)
+            data.append(vec)
+    return np.array(data)
+
+def read_ivecs(filename):
+    """Read .ivecs file"""
+    with open(filename, 'rb') as f:
+        data = []
+        while True:
+            dim_bytes = f.read(4)
+            if not dim_bytes:
+                break
+            dim = np.frombuffer(dim_bytes, dtype=np.int32)[0]
+            vec = np.frombuffer(f.read(dim * 4), dtype=np.int32)
+            data.append(vec)
+    return np.array(data)
+
 def load_dataset(dataset_name, num_queries=1000):
-    """Load dataset from HDF5"""
-    if dataset_name == 'cohere':
-        data_file = COHERE_DATA
-    else:
-        data_file = SIFT_DATA
-    
+    """Load dataset"""
     print(f"Loading {dataset_name} dataset...")
-    with h5py.File(data_file, 'r') as f:
-        base = np.array(f['train'])
-        queries = np.array(f['test'][:num_queries])
-        neighbors = np.array(f['neighbors'][:num_queries])
+    
+    if dataset_name == 'cohere':
+        with h5py.File(COHERE_DATA, 'r') as f:
+            base = np.array(f['train'])
+            queries = np.array(f['test'][:num_queries])
+            neighbors = np.array(f['neighbors'][:num_queries])
+    else:  # sift
+        base = read_fvecs(SIFT_BASE)
+        queries = read_fvecs(SIFT_QUERY)[:num_queries]
+        neighbors = read_ivecs(SIFT_GT)[:num_queries]
+    
     print(f"✓ Base: {base.shape}, Queries: {queries.shape}")
     return base, queries, neighbors
 
