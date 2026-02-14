@@ -160,36 +160,70 @@ class SPANNDiskOptimized:
         )
         
         # Step 3: Save posting lists in binary format (mmap-friendly)
-        print("[3/5] Saving posting lists in binary format...")
+        print("[3/5] Saving posting lists in single file format...")
         total_original = 0
         total_compressed = 0
         
-        for i, posting_ids in enumerate(self.posting_lists):
-            if len(posting_ids) == 0:
-                continue
+        # Single file format: [Header][Offset Table][Posting Data]
+        single_file = os.path.join(self.disk_path, 'postings.bin')
+        offset_table = []  # (centroid_id, offset, size)
+        
+        with open(single_file, 'wb') as f:
+            # Write placeholder for header
+            header_size = 12  # num_postings (4) + offset_table_size (8)
+            f.write(b'\x00' * header_size)
             
-            posting_ids = np.array(posting_ids, dtype=np.int32)
-            posting_vecs = data[posting_ids]
+            # Write placeholder for offset table
+            offset_table_start = header_size
+            offset_table_size = self.num_clusters * 20  # (id:4, offset:8, size:8) per posting
+            f.write(b'\x00' * offset_table_size)
             
-            if self.use_rabitq:
-                # Quantize
-                rabitq = RaBitQNumba(dim=self.dim, bq=self.bq, metric=self.metric)
-                codes = rabitq.build(posting_vecs)
-                
-                # Save in binary format
-                self._save_posting_binary(i, posting_ids, codes, rabitq)
-                
-                total_original += posting_vecs.nbytes
-                total_compressed += codes.nbytes + posting_ids.nbytes
-            else:
-                # No quantization
-                self._save_posting_binary(i, posting_ids, posting_vecs, None)
-                
-                total_original += posting_vecs.nbytes
-                total_compressed += posting_vecs.nbytes + posting_ids.nbytes
+            # Write posting data
+            data_start = offset_table_start + offset_table_size
+            current_offset = data_start
             
-            if (i + 1) % 50 == 0:
-                print(f"  Saved {i+1}/{self.num_clusters} postings")
+            for i, posting_ids in enumerate(self.posting_lists):
+                if len(posting_ids) == 0:
+                    offset_table.append((i, 0, 0))  # Empty posting
+                    continue
+                
+                posting_ids = np.array(posting_ids, dtype=np.int32)
+                posting_vecs = data[posting_ids]
+                
+                if self.use_rabitq:
+                    # Quantize
+                    rabitq = RaBitQNumba(dim=self.dim, bq=self.bq, metric=self.metric)
+                    codes = rabitq.build(posting_vecs)
+                    
+                    # Serialize posting
+                    posting_bytes = self._serialize_posting(posting_ids, codes, rabitq)
+                    
+                    total_original += posting_vecs.nbytes
+                    total_compressed += len(posting_bytes)
+                else:
+                    # No quantization
+                    posting_bytes = self._serialize_posting(posting_ids, posting_vecs, None)
+                    
+                    total_original += posting_vecs.nbytes
+                    total_compressed += len(posting_bytes)
+                
+                # Write posting data
+                f.write(posting_bytes)
+                offset_table.append((i, current_offset, len(posting_bytes)))
+                current_offset += len(posting_bytes)
+                
+                if (i + 1) % 1000 == 0:
+                    print(f"  Saved {i+1}/{self.num_clusters} postings")
+            
+            # Write header
+            f.seek(0)
+            f.write(struct.pack('I', self.num_clusters))
+            f.write(struct.pack('Q', offset_table_size))
+            
+            # Write offset table
+            f.seek(offset_table_start)
+            for cid, offset, size in offset_table:
+                f.write(struct.pack('IQQ', cid, offset, size))
         
         if self.use_rabitq:
             print(f"  Original: {total_original/1024**2:.2f} MB")
@@ -256,29 +290,33 @@ class SPANNDiskOptimized:
         
         print(f"✓ Index built and saved to {self.disk_path}")
     
-    def _save_posting_binary(self, centroid_id: int, posting_ids: np.ndarray, 
-                            codes: np.ndarray, rabitq: Optional[RaBitQNumba]):
-        """Save posting in binary format for mmap"""
-        posting_file = os.path.join(self.disk_path, 'postings', f'posting_{centroid_id}.bin')
+    def _serialize_posting(self, posting_ids: np.ndarray, codes: np.ndarray, 
+                          rabitq: Optional[RaBitQNumba]) -> bytes:
+        """Serialize posting to bytes"""
+        import io
+        buf = io.BytesIO()
         
-        with open(posting_file, 'wb') as f:
-            # Header
-            f.write(struct.pack('III', len(posting_ids), codes.shape[1] if len(codes.shape) > 1 else codes.shape[0], 
-                              1 if rabitq is None else 0))
-            
-            # Data
-            posting_ids.tofile(f)
-            codes.tofile(f)
-            
-            # RaBitQ params (if quantized)
-            if rabitq is not None:
-                import pickle
-                rabitq_bytes = pickle.dumps(rabitq)
-                f.write(struct.pack('I', len(rabitq_bytes)))
-                f.write(rabitq_bytes)
+        # Header
+        num_vecs = len(posting_ids)
+        code_dim = codes.shape[1] if len(codes.shape) > 1 else codes.shape[0]
+        is_unquantized = 1 if rabitq is None else 0
+        buf.write(struct.pack('III', num_vecs, code_dim, is_unquantized))
+        
+        # Data
+        buf.write(posting_ids.tobytes())
+        buf.write(codes.tobytes())
+        
+        # RaBitQ params (if quantized)
+        if rabitq is not None:
+            import pickle
+            rabitq_bytes = pickle.dumps(rabitq)
+            buf.write(struct.pack('I', len(rabitq_bytes)))
+            buf.write(rabitq_bytes)
+        
+        return buf.getvalue()
     
     def _load_posting_mmap(self, centroid_id: int, max_vectors: int = None):
-        """Load posting with memory-mapped file (zero-copy)
+        """Load posting from single file with memory-mapped I/O
         
         Args:
             centroid_id: Cluster ID
@@ -296,52 +334,61 @@ class SPANNDiskOptimized:
         
         self._cache_misses += 1
         
-        posting_file = os.path.join(self.disk_path, 'postings', f'posting_{centroid_id}.bin')
-        if not os.path.exists(posting_file):
+        # Load offset table if not loaded
+        if not hasattr(self, '_offset_table'):
+            self._load_offset_table()
+        
+        # Get offset and size
+        if centroid_id >= len(self._offset_table):
             return None, None, None
         
-        with open(posting_file, 'rb') as f:
+        offset, size = self._offset_table[centroid_id]
+        if size == 0:  # Empty posting
+            return None, None, None
+        
+        # Memory-map the single file
+        single_file = os.path.join(self.disk_path, 'postings.bin')
+        with open(single_file, 'rb') as f:
+            mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+            
             # Read header
-            num_vecs, code_dim, is_unquantized = struct.unpack('III', f.read(12))
+            num_vecs, code_dim, is_unquantized = struct.unpack('III', mm[offset:offset+12])
             
             # Limit vectors to load
             if max_vectors is not None:
                 num_vecs = min(num_vecs, max_vectors)
             
-            # Track bytes read (only what we actually read)
-            bytes_to_read = 12 + num_vecs * 4  # Header + IDs
+            # Track bytes read
+            bytes_to_read = 12 + num_vecs * 4
             if is_unquantized:
-                bytes_to_read += num_vecs * code_dim * 4  # Float32 codes
+                bytes_to_read += num_vecs * code_dim * 4
             else:
-                bytes_to_read += num_vecs * code_dim  # Uint8 codes
+                bytes_to_read += num_vecs * code_dim
             self._bytes_read += bytes_to_read
             
-            # Memory-map the data section
-            mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-            
             # Read posting IDs
-            offset = 12
-            posting_ids = np.frombuffer(mm, dtype=np.int32, count=num_vecs, offset=offset)
-            offset += num_vecs * 4
+            pos = offset + 12
+            posting_ids = np.frombuffer(mm, dtype=np.int32, count=num_vecs, offset=pos)
+            pos += num_vecs * 4
             
             # Read codes
             if is_unquantized:
-                codes = np.frombuffer(mm, dtype=np.float32, count=num_vecs * code_dim, offset=offset)
+                codes = np.frombuffer(mm, dtype=np.float32, count=num_vecs * code_dim, offset=pos)
                 codes = codes.reshape(num_vecs, code_dim)
                 rabitq = None
             else:
                 code_size = num_vecs * code_dim
-                codes = np.frombuffer(mm, dtype=np.uint8, count=code_size, offset=offset)
+                codes = np.frombuffer(mm, dtype=np.uint8, count=code_size, offset=pos)
                 codes = codes.reshape(num_vecs, code_dim)
-                offset += code_size
+                pos += code_size
                 
                 # Read RaBitQ params and restore to shared instance
-                rabitq_size = struct.unpack('I', mm[offset:offset+4])[0]
-                offset += 4
+                rabitq_size = struct.unpack('I', mm[pos:pos+4])[0]
+                pos += 4
                 import pickle
-                rabitq_params = pickle.loads(mm[offset:offset+rabitq_size])
+                rabitq_params = pickle.loads(mm[pos:pos+rabitq_size])
                 
-                # Copy params to shared instance (avoid creating new instance)
+                # Copy params to shared instance
                 if self._shared_rabitq is not None:
                     self._shared_rabitq.centroid = rabitq_params.centroid
                     self._shared_rabitq.scale = rabitq_params.scale
@@ -350,13 +397,32 @@ class SPANNDiskOptimized:
                 else:
                     rabitq = rabitq_params
         
-        # Cache result (keep only recent cache_size items, unless preload_postings=True)
-        if not self.preload_postings and len(self._posting_cache) >= self.cache_size:
-            # Remove oldest (simple FIFO, could use LRU)
-            self._posting_cache.pop(next(iter(self._posting_cache)))
+        # Cache result
+        result = (posting_ids, codes, rabitq)
+        if len(self._posting_cache) < self.cache_size:
+            self._posting_cache[centroid_id] = result
         
-        self._posting_cache[centroid_id] = (posting_ids.copy(), codes.copy(), rabitq)
-        return self._posting_cache[centroid_id]
+        return result
+    
+    def _load_offset_table(self):
+        """Load offset table from single file"""
+        single_file = os.path.join(self.disk_path, 'postings.bin')
+        with open(single_file, 'rb') as f:
+            # Read header
+            num_postings = struct.unpack('I', f.read(4))[0]
+            offset_table_size = struct.unpack('Q', f.read(8))[0]
+            
+            # Read offset table
+            self._offset_table = []
+            for _ in range(num_postings):
+                data = f.read(20)
+                if len(data) < 20:
+                    break
+                cid = struct.unpack('I', data[0:4])[0]
+                offset = struct.unpack('Q', data[4:12])[0]
+                size = struct.unpack('Q', data[12:20])[0]
+                self._offset_table.append((offset, size))
+    
     
     def _load_postings_batch(self, centroid_ids: list, max_vectors_per_posting: int = 200):
         """Batch load multiple postings with vector limit (SPTAG-style)
