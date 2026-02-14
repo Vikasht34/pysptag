@@ -90,10 +90,8 @@ class RaBitQOptimized:
                 recon_norms = np.sum(reconstructed_vectors ** 2, axis=1)
                 dots = np.dot(reconstructed_vectors, query)
                 estimated_dist = query_norm + recon_norms - 2 * dots
-            elif self.metric == 'IP':
-                estimated_dist = -np.dot(reconstructed_vectors, query)
-            elif self.metric == 'Cosine':
-                estimated_dist = -np.dot(reconstructed_vectors, query)
+            elif self.metric in ('IP', 'Cosine'):
+                estimated_dist = -np.dot(reconstructed_vectors, query)  # Negate for sorting
         
         # Get top-k (vectorized)
         k = min(k, len(estimated_dist))

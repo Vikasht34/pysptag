@@ -203,20 +203,16 @@ class RaBitQ:
             # Compute distances
             if self.metric == 'L2':
                 estimated_dist = np.sum((reconstructed_vectors - query) ** 2, axis=1)
-            elif self.metric == 'IP':
-                estimated_dist = -np.dot(reconstructed_vectors, query)
-            elif self.metric == 'Cosine':
-                estimated_dist = -np.dot(reconstructed_vectors, query)
+            elif self.metric in ('IP', 'Cosine'):
+                estimated_dist = -np.dot(reconstructed_vectors, query)  # Negate for sorting
         
         # Get top-k
         k = min(k, len(estimated_dist))
         if k == 0:
             return np.array([]), np.array([])
         
-        if k >= len(estimated_dist) - 1:
-            indices = np.argsort(estimated_dist)[:k]
-        else:
-            indices = np.argpartition(estimated_dist, k)[:k]
-            indices = indices[np.argsort(estimated_dist[indices])]
+        # Use argpartition for efficiency
+        indices = np.argpartition(estimated_dist, k-1)[:k]
+        indices = indices[np.argsort(estimated_dist[indices])]
         
         return estimated_dist[indices], indices
