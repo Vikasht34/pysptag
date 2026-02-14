@@ -91,17 +91,15 @@ class SPANNDiskOptimized:
         else:  # kmeans
             self.clusterer = KMeansClustering(metric=metric)
         
-        # Create tree (only if not using faiss)
-        if not use_faiss_centroids:
-            if tree_type == 'BKT':
-                from ..core.bktree import BKTree
-                self.tree = BKTree(num_trees=1, kmeans_k=32)
-            else:  # KDT
-                from ..core.kdtree import KDTree
-                self.tree = KDTree(num_trees=1)
-        else:
-            self.tree = None
-            self._centroid_index = None  # Will be initialized after build
+        # Create tree (always create, even if using faiss for search)
+        if tree_type == 'BKT':
+            from ..core.bktree import BKTree
+            self.tree = BKTree(num_trees=1, kmeans_k=32)
+        else:  # KDT
+            from ..core.kdtree import KDTree
+            self.tree = KDTree(num_trees=1)
+        
+        self._centroid_index = None  # Will be initialized after build if use_faiss_centroids
             
         self.rng = RNG(neighborhood_size=32, metric=metric)
         
