@@ -51,16 +51,22 @@
 ### Low Priority (Memory optimization)
 8. **Compressed posting lists** - ZSTD compression
 
-## 🐛 Recent Bug Fixes
+## 🐛 Recent Bug Fixes (Feb 13, 2026)
 
-1. **IP metric sorting** - Fixed argpartition to get largest values (not smallest)
+1. **Faiss metric bug** - CRITICAL: Was using IndexFlatL2 for all metrics!
+   - Must use IndexFlatIP for IP/Cosine metrics
+   - Was causing wrong centroid selection → 14% recall on Cohere
+   - Fixed in 3 places: RNG building, index building, benchmark loading
+   - **Impact**: 14% → 90%+ recall for IP metric
+
+2. **IP metric sorting** - Fixed argpartition to get largest values (not smallest)
    - Was returning least similar vectors instead of most similar
    - Fixed in 4 locations: async pruning + 3 search paths
    - Recall went from 14% → 91% for IP metric
 
-2. **RaBitQ IP handling** - Already correct (negates then gets smallest)
+3. **RaBitQ IP handling** - Already correct (negates then gets smallest)
 
-3. **Posting limit bounds** - Added safety check for RaBitQ indices
+4. **Posting limit bounds** - Added safety check for RaBitQ indices
 
 ## 📁 Key Files
 
