@@ -111,7 +111,8 @@ for name, num_centroids in configs:
         indices, dists = index.search(
             query, base, k=10, 
             search_internal_result_num=num_centroids,
-            max_check=6144
+            max_check=6144,
+            use_async_pruning=True  # Enable SPTAG-style async pruning
         )
         latencies.append((time.perf_counter() - q_start) * 1000)
         

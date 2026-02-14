@@ -70,7 +70,8 @@ def benchmark_search(index, base, queries, groundtruth, config_name, search_para
         ids, _ = index.search(
             queries[i], base, k=k, 
             search_internal_result_num=search_params['centroids'],
-            max_check=search_params['max_check']
+            max_check=search_params['max_check'],
+            use_async_pruning=True  # Enable SPTAG-style async pruning
         )
         latency = (time.perf_counter() - t0) * 1000
         latencies.append(latency)
