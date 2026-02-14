@@ -705,11 +705,12 @@ class SPANNDiskOptimized:
             else:
                 if self.metric == 'L2':
                     dists = np.sum((codes - query) ** 2, axis=1)
-                elif self.metric == 'IP':
-                    dists = -np.dot(codes, query)
-                elif self.metric == 'Cosine':
-                    dists = -np.dot(codes, query)
-                local_indices = np.argsort(dists)[:search_k]
+                    local_indices = np.argsort(dists)[:search_k]
+                elif self.metric in ('IP', 'Cosine'):
+                    dists = np.dot(codes, query)
+                    local_indices = np.argpartition(dists, -search_k)[-search_k:]
+                    local_indices = local_indices[np.argsort(-dists[local_indices])]
+                    dists = -dists  # Negate for consistent distance semantics
                 local_dists = dists[local_indices]
             
             for idx, local_idx in enumerate(local_indices):
@@ -746,11 +747,12 @@ class SPANNDiskOptimized:
         else:
             if self.metric == 'L2':
                 dists = np.sum((codes - query) ** 2, axis=1)
-            elif self.metric == 'IP':
-                dists = -np.dot(codes, query)
-            elif self.metric == 'Cosine':
-                dists = -np.dot(codes, query)
-            local_indices = np.argsort(dists)[:search_k]
+                local_indices = np.argsort(dists)[:search_k]
+            elif self.metric in ('IP', 'Cosine'):
+                dists = np.dot(codes, query)
+                local_indices = np.argpartition(dists, -search_k)[-search_k:]
+                local_indices = local_indices[np.argsort(-dists[local_indices])]
+                dists = -dists  # Negate for consistent distance semantics
             local_dists = dists[local_indices]
             for idx, local_idx in enumerate(local_indices):
                 results.append((posting_ids[local_idx], local_dists[idx]))
@@ -780,11 +782,12 @@ class SPANNDiskOptimized:
                 else:
                     if self.metric == 'L2':
                         dists = np.sum((codes - query) ** 2, axis=1)
-                    elif self.metric == 'IP':
-                        dists = -np.dot(codes, query)
-                    elif self.metric == 'Cosine':
-                        dists = -np.dot(codes, query)
-                    local_indices = np.argsort(dists)[:search_k]
+                        local_indices = np.argsort(dists)[:search_k]
+                    elif self.metric in ('IP', 'Cosine'):
+                        dists = np.dot(codes, query)
+                        local_indices = np.argpartition(dists, -search_k)[-search_k:]
+                        local_indices = local_indices[np.argsort(-dists[local_indices])]
+                        dists = -dists  # Negate for consistent distance semantics
                     local_dists = dists[local_indices]
                     for idx, local_idx in enumerate(local_indices):
                         results.append((posting_ids[local_idx], local_dists[idx]))
