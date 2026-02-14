@@ -419,8 +419,9 @@ class SPANNDiskOptimized:
                 # Copy params to shared instance
                 if self._shared_rabitq is not None:
                     self._shared_rabitq.centroid = rabitq_params.centroid
-                    self._shared_rabitq.scale = rabitq_params.scale
-                    self._shared_rabitq.res_min = rabitq_params.res_min
+                    if hasattr(rabitq_params, 'scale'):  # Multi-bit only
+                        self._shared_rabitq.scale = rabitq_params.scale
+                        self._shared_rabitq.res_min = rabitq_params.res_min
                     rabitq = self._shared_rabitq
                 else:
                     rabitq = rabitq_params
