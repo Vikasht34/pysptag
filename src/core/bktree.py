@@ -27,13 +27,15 @@ class BKTree:
         kmeans_k: int = 32,
         leaf_size: int = 8,
         samples: int = 1000,
-        balance_factor: float = -1.0
+        balance_factor: float = -1.0,
+        metric: str = 'L2'
     ):
         self.num_trees = num_trees
         self.kmeans_k = kmeans_k
         self.leaf_size = leaf_size
         self.samples = samples
         self.balance_factor = balance_factor
+        self.metric = metric
         
         self.tree_roots: List[BKTNode] = []
         self.tree_start: List[int] = []
@@ -152,7 +154,14 @@ class BKTree:
             labels = np.zeros(n_samples, dtype=np.int32)
             
             for i in range(n_samples):
-                dists = np.sum((subset[i] - centers) ** 2, axis=1)
+                # Compute distances based on metric
+                if self.metric == 'L2':
+                    dists = np.sum((subset[i] - centers) ** 2, axis=1)
+                elif self.metric in ('IP', 'Cosine'):
+                    dists = -np.dot(centers, subset[i])  # Negate for min
+                else:
+                    dists = np.sum((subset[i] - centers) ** 2, axis=1)
+                    
                 dists += lambda_penalty * counts  # Balance penalty
                 labels[i] = np.argmin(dists)
                 counts[labels[i]] += 1
@@ -160,7 +169,12 @@ class BKTree:
             # Check convergence
             inertia = 0
             for i in range(n_samples):
-                inertia += np.sum((subset[i] - centers[labels[i]]) ** 2)
+                if self.metric == 'L2':
+                    inertia += np.sum((subset[i] - centers[labels[i]]) ** 2)
+                elif self.metric in ('IP', 'Cosine'):
+                    inertia += -np.dot(subset[i], centers[labels[i]])
+                else:
+                    inertia += np.sum((subset[i] - centers[labels[i]]) ** 2)
             
             if inertia < best_inertia:
                 best_inertia = inertia

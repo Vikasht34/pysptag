@@ -118,7 +118,7 @@ class SPANNDiskOptimized:
         # Create tree (always create, even if using faiss for search)
         if tree_type == 'BKT':
             from ..core.bktree import BKTree
-            self.tree = BKTree(num_trees=1, kmeans_k=32)
+            self.tree = BKTree(num_trees=1, kmeans_k=32, metric=metric)
         else:  # KDT
             from ..core.kdtree import KDTree
             self.tree = KDTree(num_trees=1)

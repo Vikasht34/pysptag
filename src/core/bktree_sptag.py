@@ -17,10 +17,11 @@ class BKTNode:
 class BKTreeSPTAG:
     """BKTree using SPTAG's exact algorithm."""
     
-    def __init__(self, kmeans_k: int = 32, leaf_size: int = 8, num_trees: int = 1):
+    def __init__(self, kmeans_k: int = 32, leaf_size: int = 8, num_trees: int = 1, metric: str = 'L2'):
         self.kmeans_k = kmeans_k
         self.leaf_size = leaf_size
         self.num_trees = num_trees
+        self.metric = metric
         self.nodes: List[BKTNode] = []
         self.tree_roots: List[int] = []
         
@@ -59,8 +60,15 @@ class BKTreeSPTAG:
                     km = KMeans(n_clusters=k, n_init=1, max_iter=20, random_state=0)
                     labels = km.fit_predict(subset)
                 else:
-                    # Faiss k-means for large clusters
+                    # Faiss k-means for large clusters with metric support
                     kmeans = faiss.Kmeans(d=subset.shape[1], k=k, niter=20, verbose=False)
+                    
+                    # Set index based on metric
+                    if self.metric == 'L2':
+                        kmeans.index = faiss.IndexFlatL2(subset.shape[1])
+                    elif self.metric in ('IP', 'Cosine'):
+                        kmeans.index = faiss.IndexFlatIP(subset.shape[1])
+                    
                     kmeans.train(subset)
                     _, labels = kmeans.index.search(subset, 1)
                     labels = labels.flatten()

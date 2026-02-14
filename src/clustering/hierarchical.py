@@ -64,7 +64,8 @@ class HierarchicalClustering(ClusteringAlgorithm):
         tree = BKTree(
             kmeans_k=self.kmeans_k,
             leaf_size=self.leaf_size,
-            num_trees=1
+            num_trees=1,
+            metric=self.metric  # Pass metric for correct clustering
         )
         tree.build(data)  # Build on FULL data
         print(f"  Built tree with {len(tree.nodes)} nodes")
