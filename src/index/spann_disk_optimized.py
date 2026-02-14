@@ -562,46 +562,16 @@ class SPANNDiskOptimized:
         # Use only valid centroids
         nearest_centroids = nearest_centroids[:valid_count]
         
-        # Query-aware pruning: Load and search postings incrementally
-        all_indices = []
-        all_dists = []
-        seen = set()
-        loaded_count = 0
+        # Batch load postings
+        postings = self._load_postings_batch(list(nearest_centroids))
         
-        for centroid_id in nearest_centroids:
-            # Load posting
-            result = self._load_posting_mmap(centroid_id)
-            if result[0] is None:
-                continue
-            
-            posting_ids, codes, rabitq = result
-            loaded_count += 1
-            search_k = min(max_check, len(posting_ids))
-            
-            # Search posting
-            if self.use_rabitq:
-                _, local_indices = rabitq.search(query, codes, k=search_k)
-            else:
-                if self.metric == 'L2':
-                    dists = np.sum((codes - query) ** 2, axis=1)
-                else:
-                    dists = -np.dot(codes, query)
-                local_indices = np.argsort(dists)[:search_k]
-            
-            # Collect results
-            for local_idx in local_indices:
-                global_id = posting_ids[local_idx]
-                if global_id not in seen:
-                    seen.add(global_id)
-                    all_indices.append(global_id)
-                    if len(all_indices) >= max_check:
-                        break
-            
-            # Early termination: Stop if we have enough candidates
-            if loaded_count >= search_internal_result_num and len(all_indices) >= k * 2:
-                break
+        # Parallel search postings
+        if self.num_threads > 1:
+            results = self._search_postings_parallel(query, postings, nearest_centroids, max_check)
+        else:
+            results = self._search_postings_sequential(query, postings, nearest_centroids, max_check)
         
-        all_indices = np.array(all_indices) if all_indices else np.array([])
+        all_indices, all_dists = results
         
         if len(all_indices) == 0:
             return np.array([]), np.array([])
