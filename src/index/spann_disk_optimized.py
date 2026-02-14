@@ -489,7 +489,8 @@ class SPANNDiskOptimized:
         self, query: np.ndarray, data: np.ndarray, 
         centroid_ids: np.ndarray, k: int,
         search_internal_result_num: int, max_check: int,
-        max_vectors_per_posting: int = None
+        max_vectors_per_posting: int = None,
+        rerank_top_n: int = None
     ) -> Tuple[np.ndarray, np.ndarray]:
         """SPTAG-style async batch I/O with deterministic processing
         
@@ -503,6 +504,7 @@ class SPANNDiskOptimized:
         
         all_indices = []
         all_dists = []
+        all_approx_dists = []  # Store approximate distances for sorting before rerank
         seen = set()
         loaded_count = 0
         
@@ -528,15 +530,18 @@ class SPANNDiskOptimized:
                 n_vectors = len(posting_ids)
                 search_k = min(max_check, n_vectors)
                 
-                # Search posting
+                # Search posting and get approximate distances
                 if self.use_rabitq and rabitq is not None:
-                    _, local_indices = rabitq.search(query, codes, k=search_k)
+                    approx_dists, local_indices = rabitq.search(query, codes, k=search_k)
                     # Safety: clip indices to actual posting size
-                    local_indices = local_indices[local_indices < n_vectors]
+                    valid_mask = local_indices < n_vectors
+                    local_indices = local_indices[valid_mask]
+                    approx_dists = approx_dists[valid_mask]
                 else:
                     if self.metric == 'L2':
                         dists = np.sum((codes - query) ** 2, axis=1)
                         local_indices = np.argsort(dists)[:search_k]
+                        approx_dists = dists[local_indices]
                     else:  # IP or Cosine - higher is better
                         dists = np.dot(codes, query)
                         if search_k >= n_vectors:
@@ -544,13 +549,15 @@ class SPANNDiskOptimized:
                         else:
                             local_indices = np.argpartition(dists, -search_k)[-search_k:]
                             local_indices = local_indices[np.argsort(-dists[local_indices])]
+                        approx_dists = dists[local_indices]
                 
                 # Collect results with deduplication and bounds checking
-                for local_idx in local_indices:
+                for local_idx, approx_dist in zip(local_indices, approx_dists):
                     global_id = posting_ids[local_idx]
                     if global_id not in seen and global_id < len(data):
                         seen.add(global_id)
                         all_indices.append(global_id)
+                        all_approx_dists.append(approx_dist)
                     if len(all_indices) >= max_check:
                         break
                 
@@ -561,9 +568,18 @@ class SPANNDiskOptimized:
         t_io_end = time_module.time()
         
         all_indices = np.array(all_indices) if all_indices else np.array([])
+        all_approx_dists = np.array(all_approx_dists) if all_approx_dists else np.array([])
         
         if len(all_indices) == 0:
             return np.array([]), np.array([])
+        
+        # Limit candidates for reranking if specified
+        if rerank_top_n is not None and len(all_indices) > rerank_top_n:
+            # Sort by approximate distances and select top-N for reranking
+            # Note: RaBitQ negates IP distances, so lower is always better
+            print(f"    [RERANK] Limiting {len(all_indices)} → {rerank_top_n} candidates (sorted by approx dist)")
+            sorted_idx = np.argsort(all_approx_dists)[:rerank_top_n]  # Lower is better (RaBitQ negates IP)
+            all_indices = all_indices[sorted_idx]
         
         # Rerank with actual distances
         t_rerank_start = time_module.time()
@@ -652,7 +668,8 @@ class SPANNDiskOptimized:
         max_check: int = 4096,
         max_dist_ratio: float = 10000.0,
         use_async_pruning: bool = False,  # Enable async query-aware pruning
-        max_vectors_per_posting: int = None  # NEW: Limit vectors per posting
+        max_vectors_per_posting: int = None,  # Limit vectors per posting
+        rerank_top_n: int = None  # NEW: Only rerank top-N candidates (None = rerank all)
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Optimized search with faiss centroids + RaBitQ"""
         import time as time_module
@@ -721,7 +738,8 @@ class SPANNDiskOptimized:
             # SPTAG-style: Async batch I/O with query-aware pruning
             return self._search_with_async_pruning(
                 query, data, nearest_centroids, k, 
-                search_internal_result_num, max_check, max_vectors_per_posting
+                search_internal_result_num, max_check, max_vectors_per_posting,
+                rerank_top_n
             )
         else:
             # Current: Batch load all postings
