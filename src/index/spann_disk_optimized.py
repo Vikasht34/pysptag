@@ -562,7 +562,11 @@ class SPANNDiskOptimized:
             elif self.metric in ('IP', 'Cosine'):
                 all_dists = -np.dot(data[all_indices], query)  # Negate for sorting
         else:
-            all_dists = np.zeros(len(all_indices))
+            # Without RaBitQ, still need to compute distances for reranking!
+            if self.metric == 'L2':
+                all_dists = np.sum((data[all_indices] - query) ** 2, axis=1)
+            elif self.metric in ('IP', 'Cosine'):
+                all_dists = -np.dot(data[all_indices], query)  # Negate for sorting
         
         # Get top-k (smallest distances = best for L2, largest for IP after negation)
         if len(all_indices) > k:
@@ -572,7 +576,6 @@ class SPANNDiskOptimized:
         else:
             sorted_idx = np.argsort(all_dists)
             return all_indices[sorted_idx], all_dists[sorted_idx]
-        
         return postings
     
     def _fast_kmeans(self, data: np.ndarray, k: int, max_iter: int = 50):
