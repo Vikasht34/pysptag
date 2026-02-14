@@ -67,7 +67,8 @@ class SPANNDiskOptimized:
         posting_vector_limit: int = DEFAULT_POSTING_VECTOR_LIMIT,  # 118
         posting_page_limit: int = DEFAULT_POSTING_PAGE_LIMIT,  # 3
         internal_result_num: int = DEFAULT_INTERNAL_RESULT_NUM,  # 64
-        rng_factor: float = DEFAULT_RNG_FACTOR  # 1.0
+        rng_factor: float = DEFAULT_RNG_FACTOR,  # 1.0
+        centroid_ratio: float = 0.01  # Ratio of centroids to data (1% = 10K centroids for 1M vectors)
     ):
         self.dim = dim
         self.replica_count = replica_count
@@ -81,6 +82,7 @@ class SPANNDiskOptimized:
         self.use_rng_filtering = use_rng_filtering
         self.preload_postings = preload_postings
         self.use_faiss_centroids = use_faiss_centroids
+        self.centroid_ratio = centroid_ratio
         
         # SPTAG-exact parameters
         self.posting_vector_limit = posting_vector_limit
@@ -92,12 +94,12 @@ class SPANNDiskOptimized:
         if target_posting_size is None:
             # Use SPTAG formula
             value_size = 4 if not use_rabitq else ((dim + 3) // 4) / dim
-            self.target_posting_size = get_sptag_posting_limit(
+            self.target_posting_size = int(get_sptag_posting_limit(
                 dim, value_size, posting_vector_limit, posting_page_limit
-            )
+            ))
             print(f"Auto-calculated posting size: {self.target_posting_size} vectors (SPTAG-exact)")
         else:
-            self.target_posting_size = target_posting_size
+            self.target_posting_size = int(target_posting_size)
         
         # Select clustering algorithm
         if clustering == 'hierarchical':
@@ -105,7 +107,7 @@ class SPANNDiskOptimized:
                 select_threshold=0,  # Auto-compute from ratio (SPTAG default)
                 split_threshold=0,  # Auto-compute from ratio (SPTAG default)
                 split_factor=0,  # Auto-compute from ratio (SPTAG default)
-                ratio=0.01,
+                ratio=centroid_ratio,  # Use configurable ratio
                 kmeans_k=32,
                 leaf_size=8,
                 metric=metric
