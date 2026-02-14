@@ -489,12 +489,12 @@ class SPANNDiskOptimized:
         search_internal_result_num: int, max_check: int,
         max_vectors_per_posting: int = None
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """SPTAG-style async batch I/O with query-aware pruning
+        """SPTAG-style async batch I/O with deterministic processing
         
-        Submits all I/O requests at once using ThreadPoolExecutor,
-        then processes results as they complete with early termination.
+        Submits all I/O requests at once, then processes in centroid distance order
+        to ensure deterministic results (not completion order).
         """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from concurrent.futures import ThreadPoolExecutor
         
         all_indices = []
         all_dists = []
@@ -503,15 +503,15 @@ class SPANNDiskOptimized:
         
         # Submit all I/O requests at once (SPTAG's BatchReadFileAsync)
         with ThreadPoolExecutor(max_workers=min(8, len(centroid_ids))) as executor:
-            # Submit all loads with posting limit
-            future_to_cid = {
-                executor.submit(self._load_posting_mmap, cid, max_vectors_per_posting): cid 
+            # Submit all loads - map centroid_id to future
+            futures = {
+                cid: executor.submit(self._load_posting_mmap, cid, max_vectors_per_posting)
                 for cid in centroid_ids
             }
             
-            # Process as they complete (query-aware pruning)
-            for future in as_completed(future_to_cid):
-                result = future.result()
+            # Process in centroid distance order (deterministic)
+            for cid in centroid_ids:
+                result = futures[cid].result()  # Wait for this specific centroid
                 if result[0] is None:
                     continue
                 
