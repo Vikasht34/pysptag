@@ -384,6 +384,10 @@ class SPANNDiskOptimized:
             result = self._load_posting_mmap(cid, max_vectors=max_vectors_per_posting)
             if result[0] is not None:
                 postings[cid] = result
+                # Cache the result
+                if len(self._posting_cache) < self.cache_size:
+                    self._posting_cache[cid] = result
+                self._cache_misses += 1
         
         return postings
     
