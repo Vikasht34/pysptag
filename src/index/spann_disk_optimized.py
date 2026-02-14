@@ -12,6 +12,14 @@ from concurrent.futures import ThreadPoolExecutor
 from ..core.rng import RNG, MetricType
 from ..quantization.rabitq_numba import RaBitQNumba
 from ..clustering import ClusteringAlgorithm, KMeansClustering, HierarchicalClustering
+from ..core.sptag_params import (
+    DEFAULT_REPLICA_COUNT,
+    DEFAULT_POSTING_VECTOR_LIMIT,
+    DEFAULT_POSTING_PAGE_LIMIT,
+    DEFAULT_INTERNAL_RESULT_NUM,
+    DEFAULT_RNG_FACTOR,
+    get_sptag_posting_limit
+)
 
 
 class SPANNDiskOptimized:
@@ -20,21 +28,26 @@ class SPANNDiskOptimized:
     def __init__(
         self,
         dim: int,
-        target_posting_size: int = 118,
-        replica_count: int = 8,
+        target_posting_size: int = None,  # Auto-calculate from SPTAG defaults
+        replica_count: int = DEFAULT_REPLICA_COUNT,  # 8
         bq: int = 4,
         use_rabitq: bool = True,
         metric: MetricType = 'L2',
-        tree_type: str = 'KDT',
+        tree_type: str = 'BKT',  # BKT or KDT
         disk_path: str = './spann_index',
         cache_size: int = 128,
         num_threads: int = 1,
-        clustering: str = 'hierarchical',  # 'kmeans' or 'hierarchical'
-        use_rng_filtering: bool = True,  # Enable RNG filtering for NPA
-        preload_postings: bool = False  # Preload all postings into memory
+        clustering: str = 'hierarchical',
+        use_rng_filtering: bool = True,
+        preload_postings: bool = False,
+        use_faiss_centroids: bool = True,
+        # SPTAG-exact parameters
+        posting_vector_limit: int = DEFAULT_POSTING_VECTOR_LIMIT,  # 118
+        posting_page_limit: int = DEFAULT_POSTING_PAGE_LIMIT,  # 3
+        internal_result_num: int = DEFAULT_INTERNAL_RESULT_NUM,  # 64
+        rng_factor: float = DEFAULT_RNG_FACTOR  # 1.0
     ):
         self.dim = dim
-        self.target_posting_size = target_posting_size
         self.replica_count = replica_count
         self.bq = bq
         self.use_rabitq = use_rabitq
@@ -45,6 +58,24 @@ class SPANNDiskOptimized:
         self.num_threads = num_threads
         self.use_rng_filtering = use_rng_filtering
         self.preload_postings = preload_postings
+        self.use_faiss_centroids = use_faiss_centroids
+        
+        # SPTAG-exact parameters
+        self.posting_vector_limit = posting_vector_limit
+        self.posting_page_limit = posting_page_limit
+        self.internal_result_num = internal_result_num
+        self.rng_factor = rng_factor
+        
+        # Calculate SPTAG-exact posting size limit
+        if target_posting_size is None:
+            # Use SPTAG formula
+            value_size = 4 if not use_rabitq else ((dim + 3) // 4) / dim
+            self.target_posting_size = get_sptag_posting_limit(
+                dim, value_size, posting_vector_limit, posting_page_limit
+            )
+            print(f"Auto-calculated posting size: {self.target_posting_size} vectors (SPTAG-exact)")
+        else:
+            self.target_posting_size = target_posting_size
         
         # Select clustering algorithm
         if clustering == 'hierarchical':
@@ -60,13 +91,17 @@ class SPANNDiskOptimized:
         else:  # kmeans
             self.clusterer = KMeansClustering(metric=metric)
         
-        # Create tree
-        if tree_type == 'BKT':
-            from ..core.bktree import BKTree
-            self.tree = BKTree(num_trees=1, kmeans_k=32)
-        else:  # KDT
-            from ..core.kdtree import KDTree
-            self.tree = KDTree(num_trees=1)
+        # Create tree (only if not using faiss)
+        if not use_faiss_centroids:
+            if tree_type == 'BKT':
+                from ..core.bktree import BKTree
+                self.tree = BKTree(num_trees=1, kmeans_k=32)
+            else:  # KDT
+                from ..core.kdtree import KDTree
+                self.tree = KDTree(num_trees=1)
+        else:
+            self.tree = None
+            self._centroid_index = None  # Will be initialized after build
             
         self.rng = RNG(neighborhood_size=32, metric=metric)
         
@@ -191,10 +226,19 @@ class SPANNDiskOptimized:
             'tree_type': self.tree_type,
             'centroids': self.centroids,
             'tree': self.tree,
-            'rng': self.rng
+            'rng': self.rng,
+            'use_faiss_centroids': self.use_faiss_centroids
         }
         with open(os.path.join(self.disk_path, 'metadata.pkl'), 'wb') as f:
             pickle.dump(metadata, f)
+        
+        # Build faiss index for fast centroid search
+        if self.use_faiss_centroids:
+            print("  Building faiss centroid index...")
+            import faiss
+            self._centroid_index = faiss.IndexFlatL2(self.dim)
+            self._centroid_index.add(self.centroids.astype(np.float32))
+            print(f"  ✓ Faiss index ready ({len(self.centroids)} centroids)")
         
         print(f"✓ Index built and saved to {self.disk_path}")
     
@@ -367,14 +411,22 @@ class SPANNDiskOptimized:
         query: np.ndarray,
         data: np.ndarray,
         k: int = 10,
-        search_internal_result_num: int = 64,
+        search_internal_result_num: int = 32,  # Optimized: reduced from 64
         max_check: int = 4096,
         max_dist_ratio: float = 10000.0
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Optimized search with distance-based centroid filtering"""
+        """Optimized search with faiss centroids + RaBitQ"""
         
-        # Find nearest centroids with distances
-        if hasattr(self, 'rng') and len(self.rng.graph) > 0:
+        # Find nearest centroids - use faiss if enabled
+        if self.use_faiss_centroids and self._centroid_index is not None:
+            # Fast faiss search (~0.5ms for 11K centroids)
+            centroid_dists, nearest_centroids = self._centroid_index.search(
+                query.reshape(1, -1).astype(np.float32), 
+                search_internal_result_num
+            )
+            centroid_dists = centroid_dists[0]
+            nearest_centroids = nearest_centroids[0]
+        elif hasattr(self, 'rng') and len(self.rng.graph) > 0:
             if self.tree_type == 'BKT':
                 from ..core.bktree_rng_search import bktree_rng_search
                 nearest_centroids = bktree_rng_search(
