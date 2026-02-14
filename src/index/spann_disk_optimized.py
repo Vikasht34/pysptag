@@ -109,6 +109,22 @@ class SPANNDiskOptimized:
         self._cache_misses = 0
         self._bytes_read = 0  # Track bytes read per query
         
+        # Shared RaBitQ instance (avoid JIT recompilation)
+        if use_rabitq:
+            self._shared_rabitq = RaBitQNumba(dim=dim, bq=bq, metric=metric)
+            # Trigger JIT compilation immediately with dummy data
+            dummy_query = np.zeros(dim, dtype=np.float32)
+            dummy_codes = np.zeros((10, (dim + 3) // 4), dtype=np.uint8)
+            self._shared_rabitq.centroid = np.zeros(dim, dtype=np.float32)
+            self._shared_rabitq.scale = np.ones(dim, dtype=np.float32)
+            self._shared_rabitq.res_min = np.zeros(dim, dtype=np.float32)
+            try:
+                _ = self._shared_rabitq.search(dummy_query, dummy_codes, k=5)
+            except:
+                pass  # Ignore errors, just want to trigger JIT
+        else:
+            self._shared_rabitq = None
+        
         # Create disk directory
         os.makedirs(disk_path, exist_ok=True)
         os.makedirs(os.path.join(disk_path, 'postings'), exist_ok=True)
@@ -319,11 +335,20 @@ class SPANNDiskOptimized:
                 codes = codes.reshape(num_vecs, code_dim)
                 offset += code_size
                 
-                # Read RaBitQ
+                # Read RaBitQ params and restore to shared instance
                 rabitq_size = struct.unpack('I', mm[offset:offset+4])[0]
                 offset += 4
                 import pickle
-                rabitq = pickle.loads(mm[offset:offset+rabitq_size])
+                rabitq_params = pickle.loads(mm[offset:offset+rabitq_size])
+                
+                # Copy params to shared instance (avoid creating new instance)
+                if self._shared_rabitq is not None:
+                    self._shared_rabitq.centroid = rabitq_params.centroid
+                    self._shared_rabitq.scale = rabitq_params.scale
+                    self._shared_rabitq.res_min = rabitq_params.res_min
+                    rabitq = self._shared_rabitq
+                else:
+                    rabitq = rabitq_params
         
         # Cache result (keep only recent cache_size items, unless preload_postings=True)
         if not self.preload_postings and len(self._posting_cache) >= self.cache_size:
