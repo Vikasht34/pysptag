@@ -455,6 +455,89 @@ class SPANNDiskOptimized:
         
         return postings
     
+    def _search_with_async_pruning(
+        self, query: np.ndarray, data: np.ndarray, 
+        centroid_ids: np.ndarray, k: int,
+        search_internal_result_num: int, max_check: int
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """SPTAG-style async batch I/O with query-aware pruning
+        
+        Submits all I/O requests at once using ThreadPoolExecutor,
+        then processes results as they complete with early termination.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        all_indices = []
+        all_dists = []
+        seen = set()
+        loaded_count = 0
+        
+        # Submit all I/O requests at once (SPTAG's BatchReadFileAsync)
+        with ThreadPoolExecutor(max_workers=min(8, len(centroid_ids))) as executor:
+            # Submit all loads
+            future_to_cid = {
+                executor.submit(self._load_posting_mmap, cid): cid 
+                for cid in centroid_ids
+            }
+            
+            # Process as they complete (query-aware pruning)
+            for future in as_completed(future_to_cid):
+                result = future.result()
+                if result[0] is None:
+                    continue
+                
+                posting_ids, codes, rabitq = result
+                loaded_count += 1
+                search_k = min(max_check, len(posting_ids))
+                
+                # Search posting
+                if self.use_rabitq and rabitq is not None:
+                    _, local_indices = rabitq.search(query, codes, k=search_k)
+                else:
+                    if self.metric == 'L2':
+                        dists = np.sum((codes - query) ** 2, axis=1)
+                    else:
+                        dists = -np.dot(codes, query)
+                    local_indices = np.argsort(dists)[:search_k]
+                
+                # Collect results
+                for local_idx in local_indices:
+                    global_id = posting_ids[local_idx]
+                    if global_id not in seen:
+                        seen.add(global_id)
+                        all_indices.append(global_id)
+                        if len(all_indices) >= max_check:
+                            break
+                
+                # Early termination (SPTAG's query-aware pruning)
+                if loaded_count >= search_internal_result_num and len(all_indices) >= k * 2:
+                    break
+        
+        all_indices = np.array(all_indices) if all_indices else np.array([])
+        
+        if len(all_indices) == 0:
+            return np.array([]), np.array([])
+        
+        # Rerank with actual distances
+        if self.use_rabitq:
+            if self.metric == 'L2':
+                all_dists = np.sum((data[all_indices] - query) ** 2, axis=1)
+            elif self.metric in ('IP', 'Cosine'):
+                all_dists = -np.dot(data[all_indices], query)
+        else:
+            all_dists = np.zeros(len(all_indices))
+        
+        # Get top-k
+        if len(all_indices) > k:
+            top_k_idx = np.argpartition(all_dists, k-1)[:k]
+            top_k_idx = top_k_idx[np.argsort(all_dists[top_k_idx])]
+            return all_indices[top_k_idx], all_dists[top_k_idx]
+        else:
+            sorted_idx = np.argsort(all_dists)
+            return all_indices[sorted_idx], all_dists[sorted_idx]
+        
+        return postings
+    
     def _fast_kmeans(self, data: np.ndarray, k: int, max_iter: int = 50):
         """Fast vectorized k-means"""
         n, dim = data.shape
@@ -502,9 +585,10 @@ class SPANNDiskOptimized:
         query: np.ndarray,
         data: np.ndarray,
         k: int = 10,
-        search_internal_result_num: int = 32,  # Optimized: reduced from 64
+        search_internal_result_num: int = 32,
         max_check: int = 4096,
-        max_dist_ratio: float = 10000.0
+        max_dist_ratio: float = 10000.0,
+        use_async_pruning: bool = False  # NEW: Enable async query-aware pruning
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Optimized search with faiss centroids + RaBitQ"""
         
@@ -562,16 +646,24 @@ class SPANNDiskOptimized:
         # Use only valid centroids
         nearest_centroids = nearest_centroids[:valid_count]
         
-        # Batch load postings
-        postings = self._load_postings_batch(list(nearest_centroids))
-        
-        # Parallel search postings
-        if self.num_threads > 1:
-            results = self._search_postings_parallel(query, postings, nearest_centroids, max_check)
+        # Choose loading strategy
+        if use_async_pruning:
+            # SPTAG-style: Async batch I/O with query-aware pruning
+            return self._search_with_async_pruning(
+                query, data, nearest_centroids, k, 
+                search_internal_result_num, max_check
+            )
         else:
-            results = self._search_postings_sequential(query, postings, nearest_centroids, max_check)
-        
-        all_indices, all_dists = results
+            # Current: Batch load all postings
+            postings = self._load_postings_batch(list(nearest_centroids))
+            
+            # Parallel search postings
+            if self.num_threads > 1:
+                results = self._search_postings_parallel(query, postings, nearest_centroids, max_check)
+            else:
+                results = self._search_postings_sequential(query, postings, nearest_centroids, max_check)
+            
+            all_indices, all_dists = results
         
         if len(all_indices) == 0:
             return np.array([]), np.array([])
