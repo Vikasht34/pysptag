@@ -159,71 +159,69 @@ class SPANNDiskOptimized:
             use_rng_filtering=self.use_rng_filtering
         )
         
-        # Step 3: Save posting lists in binary format (mmap-friendly)
+        # Step 3: Save posting lists in single file format (SPTAG-style)
         print("[3/5] Saving posting lists in single file format...")
         total_original = 0
         total_compressed = 0
         
-        # Single file format: [Header][Offset Table][Posting Data]
+        # First pass: serialize all postings and collect offsets
         single_file = os.path.join(self.disk_path, 'postings.bin')
-        offset_table = []  # (centroid_id, offset, size)
+        offset_table = []
+        serialized_postings = []
         
+        for i, posting_ids in enumerate(self.posting_lists):
+            if len(posting_ids) == 0:
+                offset_table.append((i, 0, 0))
+                serialized_postings.append(b'')
+                continue
+            
+            posting_ids = np.array(posting_ids, dtype=np.int32)
+            posting_vecs = data[posting_ids]
+            
+            if self.use_rabitq:
+                rabitq = RaBitQNumba(dim=self.dim, bq=self.bq, metric=self.metric)
+                codes = rabitq.build(posting_vecs)
+                posting_bytes = self._serialize_posting(posting_ids, codes, rabitq)
+                total_original += posting_vecs.nbytes
+                total_compressed += len(posting_bytes)
+            else:
+                posting_bytes = self._serialize_posting(posting_ids, posting_vecs, None)
+                total_original += posting_vecs.nbytes
+                total_compressed += len(posting_bytes)
+            
+            serialized_postings.append(posting_bytes)
+            offset_table.append((i, 0, len(posting_bytes)))  # offset filled later
+            
+            if (i + 1) % 1000 == 0:
+                print(f"  Serialized {i+1}/{self.num_clusters} postings")
+        
+        # Second pass: write file with correct offsets
+        print(f"  Writing single file...")
         with open(single_file, 'wb') as f:
-            # Write placeholder for header
-            header_size = 12  # num_postings (4) + offset_table_size (8)
-            f.write(b'\x00' * header_size)
-            
-            # Write placeholder for offset table
-            offset_table_start = header_size
-            offset_table_size = self.num_clusters * 20  # (id:4, offset:8, size:8) per posting
-            f.write(b'\x00' * offset_table_size)
-            
-            # Write posting data
-            data_start = offset_table_start + offset_table_size
-            current_offset = data_start
-            
-            for i, posting_ids in enumerate(self.posting_lists):
-                if len(posting_ids) == 0:
-                    offset_table.append((i, 0, 0))  # Empty posting
-                    continue
-                
-                posting_ids = np.array(posting_ids, dtype=np.int32)
-                posting_vecs = data[posting_ids]
-                
-                if self.use_rabitq:
-                    # Quantize
-                    rabitq = RaBitQNumba(dim=self.dim, bq=self.bq, metric=self.metric)
-                    codes = rabitq.build(posting_vecs)
-                    
-                    # Serialize posting
-                    posting_bytes = self._serialize_posting(posting_ids, codes, rabitq)
-                    
-                    total_original += posting_vecs.nbytes
-                    total_compressed += len(posting_bytes)
-                else:
-                    # No quantization
-                    posting_bytes = self._serialize_posting(posting_ids, posting_vecs, None)
-                    
-                    total_original += posting_vecs.nbytes
-                    total_compressed += len(posting_bytes)
-                
-                # Write posting data
-                f.write(posting_bytes)
-                offset_table.append((i, current_offset, len(posting_bytes)))
-                current_offset += len(posting_bytes)
-                
-                if (i + 1) % 1000 == 0:
-                    print(f"  Saved {i+1}/{self.num_clusters} postings")
-            
             # Write header
-            f.seek(0)
+            header_size = 12
+            offset_table_size = self.num_clusters * 20
             f.write(struct.pack('I', self.num_clusters))
             f.write(struct.pack('Q', offset_table_size))
             
+            # Calculate offsets
+            data_start = header_size + offset_table_size
+            current_offset = data_start
+            for i in range(len(offset_table)):
+                cid, _, size = offset_table[i]
+                offset_table[i] = (cid, current_offset, size)
+                current_offset += size
+            
             # Write offset table
-            f.seek(offset_table_start)
             for cid, offset, size in offset_table:
-                f.write(struct.pack('IQQ', cid, offset, size))
+                f.write(struct.pack('I', cid))
+                f.write(struct.pack('Q', offset))
+                f.write(struct.pack('Q', size))
+            
+            # Write posting data
+            for posting_bytes in serialized_postings:
+                if len(posting_bytes) > 0:
+                    f.write(posting_bytes)
         
         if self.use_rabitq:
             print(f"  Original: {total_original/1024**2:.2f} MB")
