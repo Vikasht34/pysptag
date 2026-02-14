@@ -496,9 +496,11 @@ class SPANNDiskOptimized:
                 else:
                     if self.metric == 'L2':
                         dists = np.sum((codes - query) ** 2, axis=1)
-                    else:
-                        dists = -np.dot(codes, query)
-                    local_indices = np.argsort(dists)[:search_k]
+                        local_indices = np.argsort(dists)[:search_k]
+                    else:  # IP or Cosine - higher is better
+                        dists = np.dot(codes, query)
+                        local_indices = np.argpartition(dists, -search_k)[-search_k:]
+                        local_indices = local_indices[np.argsort(-dists[local_indices])]
                 
                 # Collect results
                 for local_idx in local_indices:
@@ -523,11 +525,11 @@ class SPANNDiskOptimized:
             if self.metric == 'L2':
                 all_dists = np.sum((data[all_indices] - query) ** 2, axis=1)
             elif self.metric in ('IP', 'Cosine'):
-                all_dists = -np.dot(data[all_indices], query)
+                all_dists = -np.dot(data[all_indices], query)  # Negate for sorting
         else:
             all_dists = np.zeros(len(all_indices))
         
-        # Get top-k
+        # Get top-k (smallest distances = best for L2, largest for IP after negation)
         if len(all_indices) > k:
             top_k_idx = np.argpartition(all_dists, k-1)[:k]
             top_k_idx = top_k_idx[np.argsort(all_dists[top_k_idx])]
