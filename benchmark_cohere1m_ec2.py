@@ -94,7 +94,7 @@ def main():
         print(f"\n✓ Loading existing index from {INDEX_DIR}")
         index = SPANNDiskOptimized(
             dim=768,
-            metric='Cosine',
+            metric='IP',
             disk_path=INDEX_DIR,
             use_rabitq=True,
             use_faiss_centroids=True,
@@ -125,7 +125,7 @@ def main():
             replica_count=8,
             use_rabitq=True,
             bq=2,
-            metric='Cosine',
+            metric='IP',
             tree_type='BKT',
             clustering='hierarchical',
             use_rng_filtering=True,
