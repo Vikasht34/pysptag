@@ -496,7 +496,10 @@ class SPANNDiskOptimized:
         Submits all I/O requests at once, then processes in centroid distance order
         to ensure deterministic results (not completion order).
         """
+        import time as time_module
         from concurrent.futures import ThreadPoolExecutor
+        
+        t_start = time_module.time()
         
         all_indices = []
         all_dists = []
@@ -504,12 +507,15 @@ class SPANNDiskOptimized:
         loaded_count = 0
         
         # Submit all I/O requests at once (SPTAG's BatchReadFileAsync)
+        t_io_start = time_module.time()
         with ThreadPoolExecutor(max_workers=min(8, len(centroid_ids))) as executor:
             # Submit all loads - map centroid_id to future
             futures = {
                 cid: executor.submit(self._load_posting_mmap, cid, max_vectors_per_posting)
                 for cid in centroid_ids
             }
+            
+            t_io_submit = time_module.time()
             
             # Process in centroid distance order (deterministic)
             for cid in centroid_ids:
@@ -552,12 +558,15 @@ class SPANNDiskOptimized:
                 if loaded_count >= search_internal_result_num and len(all_indices) >= k * 2:
                     break
         
+        t_io_end = time_module.time()
+        
         all_indices = np.array(all_indices) if all_indices else np.array([])
         
         if len(all_indices) == 0:
             return np.array([]), np.array([])
         
         # Rerank with actual distances
+        t_rerank_start = time_module.time()
         if self.use_rabitq:
             if self.metric == 'L2':
                 all_dists = np.sum((data[all_indices] - query) ** 2, axis=1)
@@ -570,14 +579,26 @@ class SPANNDiskOptimized:
             elif self.metric in ('IP', 'Cosine'):
                 all_dists = -np.dot(data[all_indices], query)  # Negate for sorting
         
+        t_rerank_end = time_module.time()
+        
         # Get top-k (smallest distances = best for L2, largest for IP after negation)
         if len(all_indices) > k:
             top_k_idx = np.argpartition(all_dists, k-1)[:k]
             top_k_idx = top_k_idx[np.argsort(all_dists[top_k_idx])]
-            return all_indices[top_k_idx], all_dists[top_k_idx]
+            result = (all_indices[top_k_idx], all_dists[top_k_idx])
         else:
             sorted_idx = np.argsort(all_dists)
-            return all_indices[sorted_idx], all_dists[sorted_idx]
+            result = (all_indices[sorted_idx], all_dists[sorted_idx])
+        
+        t_end = time_module.time()
+        
+        # Print timing breakdown
+        print(f"    [TIMING] Total: {(t_end-t_start)*1000:.2f}ms | "
+              f"I/O: {(t_io_end-t_io_start)*1000:.2f}ms | "
+              f"Rerank: {(t_rerank_end-t_rerank_start)*1000:.2f}ms | "
+              f"Candidates: {len(all_indices)}")
+        
+        return result
         return postings
     
     def _fast_kmeans(self, data: np.ndarray, k: int, max_iter: int = 50):
@@ -634,8 +655,11 @@ class SPANNDiskOptimized:
         max_vectors_per_posting: int = None  # NEW: Limit vectors per posting
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Optimized search with faiss centroids + RaBitQ"""
+        import time as time_module
+        t_search_start = time_module.time()
         
         # Find nearest centroids - use faiss if enabled
+        t_centroid_start = time_module.time()
         if self.use_faiss_centroids and self._centroid_index is not None:
             # Fast faiss search (~0.5ms for 11K centroids)
             centroid_dists, nearest_centroids = self._centroid_index.search(
@@ -674,6 +698,9 @@ class SPANNDiskOptimized:
             sorted_idx = np.argsort(centroid_dists)
             nearest_centroids = sorted_idx[:search_internal_result_num]
             centroid_dists = centroid_dists[sorted_idx[:search_internal_result_num]]
+        
+        t_centroid_end = time_module.time()
+        print(f"  [TIMING] Centroid search: {(t_centroid_end-t_centroid_start)*1000:.2f}ms")
         
         # SPTAG-style distance filtering: limitDist = first_dist * maxDistRatio
         limit_dist = centroid_dists[0] * max_dist_ratio
