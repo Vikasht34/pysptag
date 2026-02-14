@@ -9,6 +9,7 @@ import mmap
 from typing import Tuple, Optional, Dict
 from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
+from numba import njit
 from ..core.rng import RNG, MetricType
 from ..quantization.rabitq_numba import RaBitQNumba
 from ..clustering import ClusteringAlgorithm, KMeansClustering, HierarchicalClustering
@@ -20,6 +21,27 @@ from ..core.sptag_params import (
     DEFAULT_RNG_FACTOR,
     get_sptag_posting_limit
 )
+
+
+@njit
+def deduplicate_with_hash(candidates, hash_size=8192):
+    """Fast deduplication with fixed-size hash table"""
+    hash_table = np.full(hash_size, -1, dtype=np.int32)
+    unique = []
+    
+    for candidate in candidates:
+        idx = candidate % hash_size
+        # Linear probing
+        probes = 0
+        while hash_table[idx] != -1 and hash_table[idx] != candidate and probes < hash_size:
+            idx = (idx + 1) % hash_size
+            probes += 1
+        
+        if hash_table[idx] == -1:
+            hash_table[idx] = candidate
+            unique.append(candidate)
+    
+    return np.array(unique, dtype=np.int32)
 
 
 class SPANNDiskOptimized:
@@ -458,7 +480,8 @@ class SPANNDiskOptimized:
     def _search_with_async_pruning(
         self, query: np.ndarray, data: np.ndarray, 
         centroid_ids: np.ndarray, k: int,
-        search_internal_result_num: int, max_check: int
+        search_internal_result_num: int, max_check: int,
+        max_vectors_per_posting: int = None
     ) -> Tuple[np.ndarray, np.ndarray]:
         """SPTAG-style async batch I/O with query-aware pruning
         
@@ -474,9 +497,9 @@ class SPANNDiskOptimized:
         
         # Submit all I/O requests at once (SPTAG's BatchReadFileAsync)
         with ThreadPoolExecutor(max_workers=min(8, len(centroid_ids))) as executor:
-            # Submit all loads
+            # Submit all loads with posting limit
             future_to_cid = {
-                executor.submit(self._load_posting_mmap, cid): cid 
+                executor.submit(self._load_posting_mmap, cid, max_vectors_per_posting): cid 
                 for cid in centroid_ids
             }
             
@@ -488,28 +511,34 @@ class SPANNDiskOptimized:
                 
                 posting_ids, codes, rabitq = result
                 loaded_count += 1
-                search_k = min(max_check, len(posting_ids))
+                n_vectors = len(posting_ids)
+                search_k = min(max_check, n_vectors)
                 
                 # Search posting
                 if self.use_rabitq and rabitq is not None:
                     _, local_indices = rabitq.search(query, codes, k=search_k)
+                    # Safety: clip indices to actual posting size
+                    local_indices = local_indices[local_indices < n_vectors]
                 else:
                     if self.metric == 'L2':
                         dists = np.sum((codes - query) ** 2, axis=1)
                         local_indices = np.argsort(dists)[:search_k]
                     else:  # IP or Cosine - higher is better
                         dists = np.dot(codes, query)
-                        local_indices = np.argpartition(dists, -search_k)[-search_k:]
-                        local_indices = local_indices[np.argsort(-dists[local_indices])]
+                        if search_k >= n_vectors:
+                            local_indices = np.argsort(-dists)
+                        else:
+                            local_indices = np.argpartition(dists, -search_k)[-search_k:]
+                            local_indices = local_indices[np.argsort(-dists[local_indices])]
                 
-                # Collect results
+                # Collect results with deduplication
                 for local_idx in local_indices:
                     global_id = posting_ids[local_idx]
                     if global_id not in seen:
                         seen.add(global_id)
                         all_indices.append(global_id)
-                        if len(all_indices) >= max_check:
-                            break
+                    if len(all_indices) >= max_check:
+                        break
                 
                 # Early termination (SPTAG's query-aware pruning)
                 if loaded_count >= search_internal_result_num and len(all_indices) >= k * 2:
@@ -590,7 +619,8 @@ class SPANNDiskOptimized:
         search_internal_result_num: int = 32,
         max_check: int = 4096,
         max_dist_ratio: float = 10000.0,
-        use_async_pruning: bool = False  # NEW: Enable async query-aware pruning
+        use_async_pruning: bool = False,  # Enable async query-aware pruning
+        max_vectors_per_posting: int = None  # NEW: Limit vectors per posting
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Optimized search with faiss centroids + RaBitQ"""
         
@@ -653,11 +683,11 @@ class SPANNDiskOptimized:
             # SPTAG-style: Async batch I/O with query-aware pruning
             return self._search_with_async_pruning(
                 query, data, nearest_centroids, k, 
-                search_internal_result_num, max_check
+                search_internal_result_num, max_check, max_vectors_per_posting
             )
         else:
             # Current: Batch load all postings
-            postings = self._load_postings_batch(list(nearest_centroids))
+            postings = self._load_postings_batch(list(nearest_centroids), max_vectors_per_posting)
             
             # Parallel search postings
             if self.num_threads > 1:
@@ -685,6 +715,51 @@ class SPANNDiskOptimized:
             top_k_idx = np.argsort(true_dists)[:k]
         
         return all_indices[top_k_idx], true_dists[top_k_idx]
+    
+    def search_batch(
+        self,
+        queries: np.ndarray,
+        data: np.ndarray,
+        k: int = 10,
+        search_internal_result_num: int = 32,
+        max_check: int = 4096,
+        max_dist_ratio: float = 10000.0,
+        use_async_pruning: bool = False,
+        max_vectors_per_posting: int = None
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Batch search multiple queries with vectorized centroid search"""
+        batch_size = len(queries)
+        all_ids = np.zeros((batch_size, k), dtype=np.int32)
+        all_dists = np.zeros((batch_size, k), dtype=np.float32)
+        
+        # Vectorized centroid search for all queries at once
+        if self.use_faiss_centroids and self._centroid_index is not None:
+            centroid_dists_batch, nearest_centroids_batch = self._centroid_index.search(
+                queries.astype(np.float32), search_internal_result_num
+            )
+        else:
+            # Vectorized distance computation
+            if self.metric == 'L2':
+                centroid_dists_batch = np.sum((queries[:, None, :] - self.centroids[None, :, :]) ** 2, axis=2)
+            elif self.metric in ('IP', 'Cosine'):
+                centroid_dists_batch = -np.dot(queries, self.centroids.T)
+            nearest_centroids_batch = np.argsort(centroid_dists_batch, axis=1)[:, :search_internal_result_num]
+            centroid_dists_batch = np.take_along_axis(centroid_dists_batch, nearest_centroids_batch, axis=1)
+        
+        # Search each query (can't fully batch posting list search)
+        for i in range(batch_size):
+            ids, dists = self.search(
+                queries[i], data, k=k,
+                search_internal_result_num=search_internal_result_num,
+                max_check=max_check,
+                max_dist_ratio=max_dist_ratio,
+                use_async_pruning=use_async_pruning,
+                max_vectors_per_posting=max_vectors_per_posting
+            )
+            all_ids[i] = ids
+            all_dists[i] = dists
+        
+        return all_ids, all_dists
     
     def _search_postings_sequential(self, query, postings, nearest_centroids, max_check):
         """Sequential posting search (original)"""

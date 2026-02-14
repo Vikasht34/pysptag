@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "/Users/viktari/pysptag/benchmark_optimizations.py", line 13, in <module>
+    from src.index.spann_disk_optimized import SPANNDiskOptimized
+  File "/Users/viktari/pysptag/src/index/spann_disk_optimized.py", line 531
+    if len(all_indices) >= max_check:
+IndentationError: unexpected indent
