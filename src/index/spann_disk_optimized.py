@@ -259,8 +259,11 @@ class SPANNDiskOptimized:
         # Build initial graph from tree search
         print(f"  Building initial RNG graph using k-NN...")
         import faiss
-        # Use faiss for fast k-NN (much faster than tree search)
-        index_knn = faiss.IndexFlatL2(self.centroids.shape[1])
+        # Use faiss for fast k-NN (metric-aware)
+        if self.metric == 'L2':
+            index_knn = faiss.IndexFlatL2(self.centroids.shape[1])
+        else:  # IP or Cosine
+            index_knn = faiss.IndexFlatIP(self.centroids.shape[1])
         index_knn.add(self.centroids.astype(np.float32))
         
         init_graph = []
@@ -300,13 +303,16 @@ class SPANNDiskOptimized:
         with open(os.path.join(self.disk_path, 'metadata.pkl'), 'wb') as f:
             pickle.dump(metadata, f)
         
-        # Build faiss index for fast centroid search
+        # Build faiss index for fast centroid search (metric-aware)
         if self.use_faiss_centroids:
             print("  Building faiss centroid index...")
             import faiss
-            self._centroid_index = faiss.IndexFlatL2(self.dim)
+            if self.metric == 'L2':
+                self._centroid_index = faiss.IndexFlatL2(self.dim)
+            else:  # IP or Cosine
+                self._centroid_index = faiss.IndexFlatIP(self.dim)
             self._centroid_index.add(self.centroids.astype(np.float32))
-            print(f"  ✓ Faiss index ready ({len(self.centroids)} centroids)")
+            print(f"  ✓ Faiss index ready ({len(self.centroids)} centroids, metric={self.metric})")
         
         print(f"✓ Index built and saved to {self.disk_path}")
     

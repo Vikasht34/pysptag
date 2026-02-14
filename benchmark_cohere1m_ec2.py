@@ -109,11 +109,14 @@ def main():
                 if k not in ['use_faiss_centroids', '_centroid_index', '_shared_rabitq']:
                     setattr(index, k, v)
         
-        # Setup Faiss index
-        index._centroid_index = faiss.IndexFlatL2(index.dim)
+        # Setup Faiss index (metric-aware)
+        if index.metric == 'L2':
+            index._centroid_index = faiss.IndexFlatL2(index.dim)
+        else:  # IP or Cosine
+            index._centroid_index = faiss.IndexFlatIP(index.dim)
         index._centroid_index.add(index.centroids.astype(np.float32))
         
-        print(f"✓ Loaded: {index.num_clusters} clusters")
+        print(f"✓ Loaded: {index.num_clusters} clusters, metric={index.metric}")
     else:
         print(f"\nBuilding optimized index at {INDEX_DIR}...")
         print("  Config: posting_size=500, replica=8, RaBitQ 2-bit")
