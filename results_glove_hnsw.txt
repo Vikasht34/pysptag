@@ -1,0 +1,90 @@
+Loading GloVe data...
+Loaded: base=(1183514, 200), queries=(10000, 200), GT=(10000, 100)
+Normalizing vectors...
+
+Building index with HNSW...
+Normalizing vectors for COSINE metric...
+Building optimized SPANN for 1183514 vectors
+  Clustering: HierarchicalClustering
+  Posting limit: 500 vectors
+  Replica count: 8
+[1/5] Clustering...
+  Building BKTree on 1183514 vectors (k=32, leaf=8)...
+  Built tree with 1183515 nodes
+  Selecting heads dynamically (ratio=0.01)...
+    Optimal: select_thresh=100, split_thresh=199, diff=0.19%
+  Selected 14064 centroids (1.19% of data)
+  Created 14064 clusters (1.19% of data)
+[2/5] Assigning vectors to 14064 centroids...
+  Assigning 1183514 vectors with RNG filtering (batched)...
+    Processing 1183514 vectors in 12 batches with RNG filtering...
+    Batch 10/12 done (1000000/1183514 vectors)
+    Batch 12/12 done (1183514/1183514 vectors)
+  Truncated 58189 assignments due to posting limits
+  Posting sizes: min=1, max=500, avg=80.0
+[3/5] Saving posting lists in single file format...
+  Serialized 1000/14064 postings
+  Serialized 2000/14064 postings
+  Serialized 3000/14064 postings
+  Serialized 4000/14064 postings
+  Serialized 5000/14064 postings
+  Serialized 6000/14064 postings
+  Serialized 7000/14064 postings
+  Serialized 8000/14064 postings
+  Serialized 9000/14064 postings
+  Serialized 10000/14064 postings
+  Serialized 11000/14064 postings
+  Serialized 12000/14064 postings
+  Serialized 13000/14064 postings
+  Serialized 14000/14064 postings
+  Writing single file...
+  Stored: 858.62 MB (no compression)
+[4/5] Building HNSW on centroids...
+  Built HNSW with M=16, ef_construction=200
+[5/5] Saving metadata...
+  Saving HNSW centroid index...
+  ✓ HNSW index saved (14064 centroids, M=16)
+✓ Index built and saved to /tmp/glove_index
+DEBUG: About to return from build()
+✓ Index built: 14064 clusters
+
+Testing with 1000 queries
+ Centroids   MaxCheck   Recall@100    Avg(ms)
+--------------------------------------------------
+        32       2048       33.36%       1.68
+        32       4096       40.80%       2.31
+        32       8192       44.98%       3.24
+        32      16384       45.57%       3.48
+        32      32768       45.57%       3.50
+        32      49152       45.57%       3.38
+        32    1000000       45.57%       3.78
+        64       2048       33.65%       2.09
+        64       4096       41.85%       3.27
+        64       8192       50.15%       5.52
+        64      16384       54.30%       6.73
+        64      32768       54.62%       6.02
+        64      49152       54.62%       5.87
+        64    1000000       54.62%       6.10
+       128       2048       33.62%       2.83
+       128       4096       41.82%       3.44
+       128       8192       50.64%       5.24
+       128      16384       59.10%       8.70
+       128      32768       62.58%      12.76
+       128      49152       62.64%      13.81
+       128    1000000       62.64%      14.06
+       256       2048       33.58%       4.92
+       256       4096       41.78%       6.43
+       256       8192       50.48%       8.27
+       256      16384       59.61%      13.28
+       256      32768       67.57%      21.92
+       256      49152       69.59%      25.35
+       256    1000000       69.74%      25.62
+       512       2048       33.59%       8.67
+       512       4096       41.73%      10.26
+       512       8192       50.40%      12.43
+       512      16384       59.52%      17.20
+       512      32768       68.22%      29.01
+       512      49152       72.95%      37.40
+       512    1000000       76.55%      47.92
+
+Done!
