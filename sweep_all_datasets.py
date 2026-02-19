@@ -189,7 +189,7 @@ def run_sweep(dataset_name):
         log.write("Preparing queries...\n")
         log.flush()
         num_queries = min(len(queries), len(groundtruth))  # Use min of queries and GT
-        sample_size = min(1000, num_queries)
+        sample_size = min(100, num_queries)  # TEST: 100 queries
         np.random.seed(42)
         sample_indices = np.random.choice(num_queries, sample_size, replace=False)
         sample_queries = queries[sample_indices]

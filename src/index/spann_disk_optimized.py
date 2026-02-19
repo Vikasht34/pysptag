@@ -369,6 +369,7 @@ class SPANNDiskOptimized:
             print(f"  ✓ Faiss index ready ({len(self.centroids)} centroids, metric={self.metric})")
         
         print(f"✓ Index built and saved to {self.disk_path}")
+        print("DEBUG: About to return from build()", flush=True)
     
     def _serialize_posting(self, posting_ids: np.ndarray, codes: np.ndarray, 
                           rabitq: Optional[RaBitQ]) -> bytes:
