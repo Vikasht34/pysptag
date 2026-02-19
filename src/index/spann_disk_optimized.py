@@ -426,9 +426,10 @@ class SPANNDiskOptimized:
         
         # Memory-map the single file
         single_file = os.path.join(self.disk_path, 'postings.bin')
-        with open(single_file, 'rb') as f:
-            mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
-            
+        f = open(single_file, 'rb')
+        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        
+        try:
             # Read header
             num_vecs_total, code_dim, is_unquantized = struct.unpack('III', mm[offset:offset+12])
             
@@ -447,16 +448,16 @@ class SPANNDiskOptimized:
             
             # Read posting IDs (only what we need)
             pos = offset + 12
-            posting_ids = np.frombuffer(mm, dtype=np.int32, count=num_vecs_to_load, offset=pos)
+            posting_ids = np.frombuffer(mm, dtype=np.int32, count=num_vecs_to_load, offset=pos).copy()
             pos_ids_end = offset + 12 + num_vecs_total * 4  # Full IDs section
             
             # Read codes (only what we need)
             if is_unquantized:
-                codes = np.frombuffer(mm, dtype=np.float32, count=num_vecs_to_load * code_dim, offset=pos_ids_end)
+                codes = np.frombuffer(mm, dtype=np.float32, count=num_vecs_to_load * code_dim, offset=pos_ids_end).copy()
                 codes = codes.reshape(num_vecs_to_load, code_dim)
                 rabitq = None
             else:
-                codes = np.frombuffer(mm, dtype=np.uint8, count=num_vecs_to_load * code_dim, offset=pos_ids_end)
+                codes = np.frombuffer(mm, dtype=np.uint8, count=num_vecs_to_load * code_dim, offset=pos_ids_end).copy()
                 codes = codes.reshape(num_vecs_to_load, code_dim)
                 
                 # Read RaBitQ params from AFTER full codes section
@@ -477,6 +478,9 @@ class SPANNDiskOptimized:
                 
                 # Always use the loaded params (don't use shared instance)
                 rabitq = rabitq_params
+        finally:
+            mm.close()
+            f.close()
         
         # Cache result
         result = (posting_ids, codes, rabitq)

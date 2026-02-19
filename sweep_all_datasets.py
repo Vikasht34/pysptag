@@ -45,7 +45,7 @@ DATASETS = {
         'dtype': np.float32
     },
     'glove': {
-        'data_file': '/Users/viktari/Downloads/glove-200-angular.hdf5',
+        'data_file': '/Users/viktari/pysptag/data/glove/glove-200-angular.hdf5',
         'dim': 200,
         'metric': 'Cosine',  # Use 'Cosine' not 'COSINE' for compatibility
         'use_hdf5': True
@@ -186,12 +186,16 @@ def run_sweep(dataset_name):
         log.flush()
         
         # Sample queries - only from queries that have groundtruth
+        log.write("Preparing queries...\n")
+        log.flush()
         num_queries = min(len(queries), len(groundtruth))  # Use min of queries and GT
         sample_size = min(1000, num_queries)
         np.random.seed(42)
         sample_indices = np.random.choice(num_queries, sample_size, replace=False)
         sample_queries = queries[sample_indices]
         sample_gt = groundtruth[sample_indices]
+        log.write(f"✓ Prepared {sample_size} queries\n\n")
+        log.flush()
         
         log.write(f"Using {sample_size} sampled queries\n\n")
         log.flush()

@@ -1,0 +1,17 @@
+Auto-calculated posting size: 118 vectors (SPTAG-exact)
+Traceback (most recent call last):
+  File "/Users/viktari/pysptag/sweep_all_datasets.py", line 253, in <module>
+    run_sweep(dataset)
+  File "/Users/viktari/pysptag/sweep_all_datasets.py", line 217, in run_sweep
+    indices, dists = index.search(
+                     ^^^^^^^^^^^^^
+  File "/Users/viktari/pysptag/src/index/spann_disk_optimized.py", line 878, in search
+    postings = self._load_postings_batch(list(nearest_centroids), max_vectors_per_posting)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/viktari/pysptag/src/index/spann_disk_optimized.py", line 567, in _load_postings_batch
+    result = self._load_posting_mmap(cid, max_vectors=max_vectors_per_posting)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/viktari/pysptag/src/index/spann_disk_optimized.py", line 430, in _load_posting_mmap
+    mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyboardInterrupt
