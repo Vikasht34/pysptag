@@ -442,52 +442,52 @@ class SPANNDiskOptimized:
         
         # Read header
         num_vecs_total, code_dim, is_unquantized = struct.unpack('III', mm[offset:offset+12])
+        
+        # Limit vectors to load (but read RaBitQ from full posting)
+        num_vecs_to_load = num_vecs_total
+        if max_vectors is not None:
+            num_vecs_to_load = min(num_vecs_total, max_vectors)
+        
+        # Track bytes read
+        bytes_to_read = 12 + num_vecs_to_load * 4
+        if is_unquantized:
+            bytes_to_read += num_vecs_to_load * code_dim * 4
+        else:
+            bytes_to_read += num_vecs_to_load * code_dim
+        self._bytes_read += bytes_to_read
+        
+        # Read posting IDs (only what we need)
+        pos = offset + 12
+        posting_ids = np.frombuffer(mm, dtype=np.int32, count=num_vecs_to_load, offset=pos).copy()
+        pos_ids_end = offset + 12 + num_vecs_total * 4  # Full IDs section
+        
+        # Read codes (only what we need)
+        if is_unquantized:
+            codes = np.frombuffer(mm, dtype=np.float32, count=num_vecs_to_load * code_dim, offset=pos_ids_end).copy()
+            codes = codes.reshape(num_vecs_to_load, code_dim)
+            rabitq = None
+        else:
+            codes = np.frombuffer(mm, dtype=np.uint8, count=num_vecs_to_load * code_dim, offset=pos_ids_end).copy()
+            codes = codes.reshape(num_vecs_to_load, code_dim)
             
-            # Limit vectors to load (but read RaBitQ from full posting)
-            num_vecs_to_load = num_vecs_total
-            if max_vectors is not None:
-                num_vecs_to_load = min(num_vecs_total, max_vectors)
+            # Read RaBitQ params from AFTER full codes section
+            pos_rabitq = pos_ids_end + num_vecs_total * code_dim
+            rabitq_size = struct.unpack('I', mm[pos_rabitq:pos_rabitq+4])[0]
+            pos_rabitq += 4
+            import pickle
+            rabitq_params = pickle.loads(mm[pos_rabitq:pos_rabitq+rabitq_size])
             
-            # Track bytes read
-            bytes_to_read = 12 + num_vecs_to_load * 4
-            if is_unquantized:
-                bytes_to_read += num_vecs_to_load * code_dim * 4
-            else:
-                bytes_to_read += num_vecs_to_load * code_dim
-            self._bytes_read += bytes_to_read
+            # Slice RaBitQ params if we loaded fewer vectors
+            if num_vecs_to_load < num_vecs_total:
+                if hasattr(rabitq_params, 'f_add'):  # 1-bit
+                    rabitq_params.f_add = rabitq_params.f_add[:num_vecs_to_load]
+                    rabitq_params.f_rescale = rabitq_params.f_rescale[:num_vecs_to_load]
+                if hasattr(rabitq_params, 'scale'):  # Multi-bit
+                    rabitq_params.scale = rabitq_params.scale[:num_vecs_to_load]
+                    rabitq_params.res_min = rabitq_params.res_min[:num_vecs_to_load]
             
-            # Read posting IDs (only what we need)
-            pos = offset + 12
-            posting_ids = np.frombuffer(mm, dtype=np.int32, count=num_vecs_to_load, offset=pos).copy()
-            pos_ids_end = offset + 12 + num_vecs_total * 4  # Full IDs section
-            
-            # Read codes (only what we need)
-            if is_unquantized:
-                codes = np.frombuffer(mm, dtype=np.float32, count=num_vecs_to_load * code_dim, offset=pos_ids_end).copy()
-                codes = codes.reshape(num_vecs_to_load, code_dim)
-                rabitq = None
-            else:
-                codes = np.frombuffer(mm, dtype=np.uint8, count=num_vecs_to_load * code_dim, offset=pos_ids_end).copy()
-                codes = codes.reshape(num_vecs_to_load, code_dim)
-                
-                # Read RaBitQ params from AFTER full codes section
-                pos_rabitq = pos_ids_end + num_vecs_total * code_dim
-                rabitq_size = struct.unpack('I', mm[pos_rabitq:pos_rabitq+4])[0]
-                pos_rabitq += 4
-                import pickle
-                rabitq_params = pickle.loads(mm[pos_rabitq:pos_rabitq+rabitq_size])
-                
-                # Slice RaBitQ params if we loaded fewer vectors
-                if num_vecs_to_load < num_vecs_total:
-                    if hasattr(rabitq_params, 'f_add'):  # 1-bit
-                        rabitq_params.f_add = rabitq_params.f_add[:num_vecs_to_load]
-                        rabitq_params.f_rescale = rabitq_params.f_rescale[:num_vecs_to_load]
-                    if hasattr(rabitq_params, 'scale'):  # Multi-bit
-                        rabitq_params.scale = rabitq_params.scale[:num_vecs_to_load]
-                        rabitq_params.res_min = rabitq_params.res_min[:num_vecs_to_load]
-                
-                # Always use the loaded params (don't use shared instance)
-                rabitq = rabitq_params
+            # Always use the loaded params (don't use shared instance)
+            rabitq = rabitq_params
         
         # Cache result
         result = (posting_ids, codes, rabitq)
