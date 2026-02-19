@@ -131,6 +131,8 @@ class SPANNDiskOptimized:
         
         self._centroid_index = None  # Will be initialized after build if use_faiss_centroids
         self._hnsw_index = None  # NEW: Will be initialized after build if use_hnsw_centroids
+        self._postings_mmap = None  # Reusable mmap for postings file
+        self._postings_file = None  # File handle for postings
             
         self.rng = RNG(neighborhood_size=32, metric=metric)
         
@@ -424,14 +426,22 @@ class SPANNDiskOptimized:
         if size == 0:  # Empty posting
             return None, None, None
         
-        # Memory-map the single file
+        # Memory-map the single file (keep file handle open, reuse mmap)
         single_file = os.path.join(self.disk_path, 'postings.bin')
-        f = open(single_file, 'rb')
-        mm = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
         
-        try:
-            # Read header
-            num_vecs_total, code_dim, is_unquantized = struct.unpack('III', mm[offset:offset+12])
+        # Reuse existing mmap if available
+        if not hasattr(self, '_postings_mmap') or self._postings_mmap is None:
+            self._postings_file = open(single_file, 'rb')
+            self._postings_mmap = mmap.mmap(self._postings_file.fileno(), 0, access=mmap.ACCESS_READ)
+        
+        mm = self._postings_mmap
+        
+        # Validate offset
+        if offset + 12 > len(mm):
+            return None, None, None
+        
+        # Read header
+        num_vecs_total, code_dim, is_unquantized = struct.unpack('III', mm[offset:offset+12])
             
             # Limit vectors to load (but read RaBitQ from full posting)
             num_vecs_to_load = num_vecs_total
@@ -478,9 +488,6 @@ class SPANNDiskOptimized:
                 
                 # Always use the loaded params (don't use shared instance)
                 rabitq = rabitq_params
-        finally:
-            mm.close()
-            f.close()
         
         # Cache result
         result = (posting_ids, codes, rabitq)
