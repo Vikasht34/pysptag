@@ -159,9 +159,9 @@ def run_sweep(dataset_name):
                     
                     index._hnsw_index = hnswlib.Index(space=space, dim=index.dim)
                     index._hnsw_index.load_index(hnsw_path, max_elements=index.num_clusters)
-                    log.write(f\"  Loaded HNSW index (M={metadata.get('hnsw_m', 16)})\\n\")
+                    log.write(f"  Loaded HNSW index (M={metadata.get('hnsw_m', 16)})\n")
             
-            log.write(f\"✓ Loaded: {index.num_clusters} clusters\\n\\n\")
+            log.write(f"✓ Loaded: {index.num_clusters} clusters\n\n")
         else:
             log.write(f"Building index...\n")
             log.flush()
@@ -172,7 +172,9 @@ def run_sweep(dataset_name):
                 replica_count=8,
                 use_rabitq=False,
                 metric=config['metric'],
-                tree_type='BKT',
+                use_hnsw_centroids=True,
+                hnsw_m=16,
+                hnsw_ef_construction=200,
                 clustering='hierarchical',
                 use_rng_filtering=True,
                 use_faiss_centroids=False,
