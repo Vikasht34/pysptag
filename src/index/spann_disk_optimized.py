@@ -11,7 +11,7 @@ from functools import lru_cache
 from concurrent.futures import ThreadPoolExecutor
 from numba import njit
 from ..core.rng import RNG, MetricType
-from ..quantization.rabitq_numba import RaBitQNumba
+from ..quantization.rabitq_proper import RaBitQ
 from ..clustering import ClusteringAlgorithm, KMeansClustering, HierarchicalClustering
 from ..core.sptag_params import (
     DEFAULT_REPLICA_COUNT,
@@ -63,6 +63,9 @@ class SPANNDiskOptimized:
         use_rng_filtering: bool = True,
         preload_postings: bool = False,
         use_faiss_centroids: bool = True,
+        use_hnsw_centroids: bool = False,  # NEW: Use HNSW for centroid search
+        hnsw_m: int = 16,  # NEW: HNSW M parameter
+        hnsw_ef_construction: int = 200,  # NEW: HNSW ef_construction
         # SPTAG-exact parameters
         posting_vector_limit: int = DEFAULT_POSTING_VECTOR_LIMIT,  # 118
         posting_page_limit: int = DEFAULT_POSTING_PAGE_LIMIT,  # 3
@@ -82,6 +85,9 @@ class SPANNDiskOptimized:
         self.use_rng_filtering = use_rng_filtering
         self.preload_postings = preload_postings
         self.use_faiss_centroids = use_faiss_centroids
+        self.use_hnsw_centroids = use_hnsw_centroids
+        self.hnsw_m = hnsw_m
+        self.hnsw_ef_construction = hnsw_ef_construction
         self.centroid_ratio = centroid_ratio
         
         # SPTAG-exact parameters
@@ -124,6 +130,7 @@ class SPANNDiskOptimized:
             self.tree = KDTree(num_trees=1)
         
         self._centroid_index = None  # Will be initialized after build if use_faiss_centroids
+        self._hnsw_index = None  # NEW: Will be initialized after build if use_hnsw_centroids
             
         self.rng = RNG(neighborhood_size=32, metric=metric)
         
@@ -135,7 +142,7 @@ class SPANNDiskOptimized:
         
         # Shared RaBitQ instance (avoid JIT recompilation)
         if use_rabitq:
-            self._shared_rabitq = RaBitQNumba(dim=dim, bq=bq, metric=metric)
+            self._shared_rabitq = RaBitQ(dim=dim, bq=bq, metric=metric)
             # Trigger JIT compilation immediately with dummy data
             dummy_query = np.zeros(dim, dtype=np.float32)
             dummy_codes = np.zeros((10, (dim + 3) // 4), dtype=np.uint8)
@@ -165,6 +172,13 @@ class SPANNDiskOptimized:
     def build(self, data: np.ndarray):
         """Build index with SPTAG-style clustering"""
         n, dim = data.shape
+        
+        # Normalize for COSINE metric
+        if self.metric in ('COSINE', 'Cosine'):
+            print("Normalizing vectors for COSINE metric...")
+            norms = np.linalg.norm(data, axis=1, keepdims=True)
+            data = data / (norms + 1e-10)
+        
         print(f"Building optimized SPANN for {n} vectors")
         print(f"  Clustering: {self.clusterer.__class__.__name__}")
         print(f"  Posting limit: {self.target_posting_size} vectors")
@@ -203,7 +217,7 @@ class SPANNDiskOptimized:
             posting_vecs = data[posting_ids]
             
             if self.use_rabitq:
-                rabitq = RaBitQNumba(dim=self.dim, bq=self.bq, metric=self.metric)
+                rabitq = RaBitQ(dim=self.dim, bq=self.bq, metric=self.metric)
                 codes = rabitq.build(posting_vecs)
                 posting_bytes = self._serialize_posting(posting_ids, codes, rabitq)
                 total_original += posting_vecs.nbytes
@@ -254,37 +268,63 @@ class SPANNDiskOptimized:
         else:
             print(f"  Stored: {total_original/1024**2:.2f} MB (no compression)")
         
-        # Step 4: Build tree + RNG
-        print(f"[4/5] Building {self.tree_type}+RNG on centroids...")
-        self.tree.build(self.centroids)
-        
-        # Build initial graph from tree search
-        print(f"  Building initial RNG graph using k-NN...")
-        import faiss
-        # Use faiss for fast k-NN (metric-aware)
-        if self.metric == 'L2':
-            index_knn = faiss.IndexFlatL2(self.centroids.shape[1])
-        else:  # IP or Cosine
-            index_knn = faiss.IndexFlatIP(self.centroids.shape[1])
-        index_knn.add(self.centroids.astype(np.float32))
-        
-        init_graph = []
-        batch_size = 1000
-        for i in range(0, len(self.centroids), batch_size):
-            end = min(i + batch_size, len(self.centroids))
-            batch = self.centroids[i:end].astype(np.float32)
-            # Search for k+1 neighbors (includes self)
-            _, neighbors = index_knn.search(batch, self.rng.neighborhood_size + 1)
-            # Remove self from neighbors
-            for j, neighb in enumerate(neighbors):
-                # Filter out self (distance 0)
-                filtered = neighb[neighb != (i + j)][:self.rng.neighborhood_size]
-                init_graph.append(filtered)
+        # Step 4: Build centroid search structure
+        if self.use_hnsw_centroids:
+            print(f"[4/5] Building HNSW on centroids...")
+            import hnswlib
             
-            if (i + batch_size) % 5000 == 0:
-                print(f"    Processed {min(i + batch_size, len(self.centroids))}/{len(self.centroids)} centroids")
-        
-        self.rng.build(self.centroids, init_graph=init_graph)
+            # Map metric to hnswlib space
+            if self.metric == 'L2':
+                space = 'l2'
+            elif self.metric in ('IP', 'Cosine'):
+                space = 'ip'
+            else:
+                space = 'l2'
+            
+            # Initialize HNSW index
+            self._hnsw_index = hnswlib.Index(space=space, dim=self.centroids.shape[1])
+            self._hnsw_index.init_index(
+                max_elements=len(self.centroids),
+                ef_construction=self.hnsw_ef_construction,
+                M=self.hnsw_m
+            )
+            
+            # Add centroids
+            self._hnsw_index.add_items(self.centroids, np.arange(len(self.centroids)))
+            print(f"  Built HNSW with M={self.hnsw_m}, ef_construction={self.hnsw_ef_construction}")
+            
+        else:
+            # Original BKT+RNG approach
+            print(f"[4/5] Building {self.tree_type}+RNG on centroids...")
+            self.tree.build(self.centroids)
+            
+            # Build initial graph from tree search
+            print(f"  Building initial RNG graph using k-NN...")
+            import faiss
+            # Use faiss for fast k-NN (metric-aware)
+            if self.metric == 'L2':
+                index_knn = faiss.IndexFlatL2(self.centroids.shape[1])
+            else:  # IP or Cosine
+                index_knn = faiss.IndexFlatIP(self.centroids.shape[1])
+            index_knn.add(self.centroids.astype(np.float32))
+            
+            init_graph = []
+            batch_size = 1000
+            for i in range(0, len(self.centroids), batch_size):
+                end = min(i + batch_size, len(self.centroids))
+                batch = self.centroids[i:end].astype(np.float32)
+                # Search for k+1 neighbors (includes self)
+                _, neighbors = index_knn.search(batch, self.rng.neighborhood_size + 1)
+                # Remove self from neighbors
+                for j, neighb in enumerate(neighbors):
+                    # Filter out self (distance 0)
+                    filtered = neighb[neighb != (i + j)][:self.rng.neighborhood_size]
+                    init_graph.append(filtered)
+                
+                if (i + batch_size) % 5000 == 0:
+                    print(f"    Processed {min(i + batch_size, len(self.centroids))}/{len(self.centroids)} centroids")
+            
+            self.rng.build(self.centroids, init_graph=init_graph)
         
         # Step 5: Save metadata
         print("[5/5] Saving metadata...")
@@ -300,13 +340,23 @@ class SPANNDiskOptimized:
             'centroids': self.centroids,
             'tree': self.tree,
             'rng': self.rng,
-            'use_faiss_centroids': self.use_faiss_centroids
+            'use_faiss_centroids': self.use_faiss_centroids,
+            'use_hnsw_centroids': self.use_hnsw_centroids,
+            'hnsw_m': self.hnsw_m if self.use_hnsw_centroids else None,
+            'hnsw_ef_construction': self.hnsw_ef_construction if self.use_hnsw_centroids else None
         }
         with open(os.path.join(self.disk_path, 'metadata.pkl'), 'wb') as f:
             pickle.dump(metadata, f)
         
+        # Build HNSW index for fast centroid search
+        if self.use_hnsw_centroids:
+            print("  Saving HNSW centroid index...")
+            hnsw_path = os.path.join(self.disk_path, 'hnsw_centroids.bin')
+            self._hnsw_index.save_index(hnsw_path)
+            print(f"  ✓ HNSW index saved ({len(self.centroids)} centroids, M={self.hnsw_m})")
+        
         # Build faiss index for fast centroid search (metric-aware)
-        if self.use_faiss_centroids:
+        elif self.use_faiss_centroids:
             print("  Building faiss centroid index...")
             import faiss
             if self.metric == 'L2':
@@ -319,7 +369,7 @@ class SPANNDiskOptimized:
         print(f"✓ Index built and saved to {self.disk_path}")
     
     def _serialize_posting(self, posting_ids: np.ndarray, codes: np.ndarray, 
-                          rabitq: Optional[RaBitQNumba]) -> bytes:
+                          rabitq: Optional[RaBitQ]) -> bytes:
         """Serialize posting to bytes"""
         import io
         buf = io.BytesIO()
@@ -416,15 +466,17 @@ class SPANNDiskOptimized:
                 import pickle
                 rabitq_params = pickle.loads(mm[pos_rabitq:pos_rabitq+rabitq_size])
                 
-                # Copy params to shared instance
-                if self._shared_rabitq is not None:
-                    self._shared_rabitq.centroid = rabitq_params.centroid
-                    if hasattr(rabitq_params, 'scale'):  # Multi-bit only
-                        self._shared_rabitq.scale = rabitq_params.scale
-                        self._shared_rabitq.res_min = rabitq_params.res_min
-                    rabitq = self._shared_rabitq
-                else:
-                    rabitq = rabitq_params
+                # Slice RaBitQ params if we loaded fewer vectors
+                if num_vecs_to_load < num_vecs_total:
+                    if hasattr(rabitq_params, 'f_add'):  # 1-bit
+                        rabitq_params.f_add = rabitq_params.f_add[:num_vecs_to_load]
+                        rabitq_params.f_rescale = rabitq_params.f_rescale[:num_vecs_to_load]
+                    if hasattr(rabitq_params, 'scale'):  # Multi-bit
+                        rabitq_params.scale = rabitq_params.scale[:num_vecs_to_load]
+                        rabitq_params.res_min = rabitq_params.res_min[:num_vecs_to_load]
+                
+                # Always use the loaded params (don't use shared instance)
+                rabitq = rabitq_params
         
         # Cache result
         result = (posting_ids, codes, rabitq)
@@ -454,7 +506,7 @@ class SPANNDiskOptimized:
     
     
     def _load_postings_batch(self, centroid_ids: list, max_vectors_per_posting: int = None):
-        """Batch load multiple postings with vector limit (SPTAG-style)
+        """Batch load multiple postings with Rust async I/O
         
         Args:
             centroid_ids: List of cluster IDs
@@ -467,24 +519,88 @@ class SPANNDiskOptimized:
         for cid in centroid_ids:
             if cid in self._posting_cache:
                 cached = self._posting_cache[cid]
-                # Apply limit to cached results
                 postings[cid] = (cached[0][:max_vectors_per_posting] if cached[0] is not None else None,
                                 cached[1], cached[2])
                 self._cache_hits += 1
             else:
                 uncached.append(cid)
         
-        # Load uncached in batch with limit
+        if not uncached:
+            return postings
+        
+        # Try Rust async I/O first
+        try:
+            import fast_io
+            
+            # Prepare requests for Rust
+            requests = []
+            cid_map = {}
+            for i, cid in enumerate(uncached):
+                if cid in self._posting_offsets:
+                    offset, length = self._posting_offsets[cid]
+                    requests.append((offset, length))
+                    cid_map[i] = cid
+            
+            if requests:
+                # Load with Rust
+                single_file = os.path.join(self.disk_path, 'postings.bin')
+                loader = fast_io.AsyncBatchLoader(single_file)
+                raw_data = loader.load_batch(requests)
+                loader.close()
+                
+                # Parse results
+                for i, data in enumerate(raw_data):
+                    cid = cid_map[i]
+                    result = self._parse_posting_data(cid, data, max_vectors_per_posting)
+                    if result[0] is not None:
+                        postings[cid] = result
+                        if len(self._posting_cache) < self.cache_size:
+                            self._posting_cache[cid] = result
+                        self._cache_misses += 1
+                
+                return postings
+        except:
+            pass  # Fall back to Python
+        
+        # Fallback: Python sequential load
         for cid in uncached:
             result = self._load_posting_mmap(cid, max_vectors=max_vectors_per_posting)
             if result[0] is not None:
                 postings[cid] = result
-                # Cache the result
                 if len(self._posting_cache) < self.cache_size:
                     self._posting_cache[cid] = result
                 self._cache_misses += 1
         
         return postings
+    
+    def _parse_posting_data(self, cid: int, data: bytes, max_vectors: int = None):
+        """Parse raw posting data from bytes."""
+        import struct
+        
+        # Read header
+        num_vecs_total, code_dim, is_unquantized = struct.unpack('III', data[:12])
+        
+        num_vecs_to_load = num_vecs_total
+        if max_vectors is not None:
+            num_vecs_to_load = min(num_vecs_total, max_vectors)
+        
+        # Read posting IDs
+        pos = 12
+        posting_ids = np.frombuffer(data, dtype=np.int32, count=num_vecs_to_load, offset=pos)
+        pos += num_vecs_total * 4
+        
+        # Read codes
+        if is_unquantized:
+            codes = np.frombuffer(data, dtype=np.float32, count=num_vecs_to_load * code_dim, offset=pos)
+            codes = codes.reshape(num_vecs_to_load, code_dim)
+        else:
+            codes = np.frombuffer(data, dtype=np.uint8, count=num_vecs_to_load * code_dim, offset=pos)
+            codes = codes.reshape(num_vecs_to_load, code_dim)
+        
+        # Get RaBitQ instance
+        rabitq = self._shared_rabitq.get(cid) if self.use_rabitq else None
+        
+        return (posting_ids, codes, rabitq)
     
     def _search_with_async_pruning(
         self, query: np.ndarray, data: np.ndarray, 
@@ -587,13 +703,13 @@ class SPANNDiskOptimized:
         if self.use_rabitq:
             if self.metric == 'L2':
                 all_dists = np.sum((data[all_indices] - query) ** 2, axis=1)
-            elif self.metric in ('IP', 'Cosine'):
+            elif self.metric in ('IP', 'COSINE', 'Cosine'):
                 all_dists = -np.dot(data[all_indices], query)  # Negate for sorting
         else:
             # Without RaBitQ, still need to compute distances for reranking!
             if self.metric == 'L2':
                 all_dists = np.sum((data[all_indices] - query) ** 2, axis=1)
-            elif self.metric in ('IP', 'Cosine'):
+            elif self.metric in ('IP', 'COSINE', 'Cosine'):
                 all_dists = -np.dot(data[all_indices], query)  # Negate for sorting
         
         t_rerank_end = time_module.time()
@@ -639,7 +755,7 @@ class SPANNDiskOptimized:
                 if self.metric == 'L2':
                     batch_sq = np.sum(batch ** 2, axis=1, keepdims=True)
                     dists = batch_sq + centers_sq - 2 * np.dot(batch, centers.T)
-                elif self.metric in ('IP', 'Cosine'):
+                elif self.metric in ('IP', 'COSINE', 'Cosine'):
                     dists = -np.dot(batch, centers.T)
                 
                 labels[start:end] = np.argmin(dists, axis=1)
@@ -676,9 +792,23 @@ class SPANNDiskOptimized:
         import time as time_module
         t_search_start = time_module.time()
         
-        # Find nearest centroids - use faiss if enabled
+        # Normalize query for COSINE metric
+        if self.metric in ('COSINE', 'Cosine'):
+            query_norm = np.linalg.norm(query)
+            if query_norm > 0:
+                query = query / query_norm
+        
+        # Find nearest centroids - use HNSW, faiss, or BKT+RNG
         t_centroid_start = time_module.time()
-        if self.use_faiss_centroids and self._centroid_index is not None:
+        if self.use_hnsw_centroids and self._hnsw_index is not None:
+            # Use HNSW for centroid search
+            labels, distances = self._hnsw_index.knn_query(
+                query.reshape(1, -1).astype(np.float32),
+                k=search_internal_result_num
+            )
+            nearest_centroids = labels[0]
+            centroid_dists = distances[0]
+        elif self.use_faiss_centroids and self._centroid_index is not None:
             # Fast faiss search (~0.5ms for 11K centroids)
             centroid_dists, nearest_centroids = self._centroid_index.search(
                 query.reshape(1, -1).astype(np.float32), 
@@ -697,7 +827,7 @@ class SPANNDiskOptimized:
                 # Compute distances for filtering
                 if self.metric == 'L2':
                     centroid_dists = np.sum((self.centroids[nearest_centroids] - query) ** 2, axis=1)
-                elif self.metric in ('IP', 'Cosine'):
+                elif self.metric in ('IP', 'COSINE', 'Cosine'):
                     centroid_dists = -np.dot(self.centroids[nearest_centroids], query)
             else:  # KDT
                 nearest_centroids = self.tree.search(
@@ -706,19 +836,19 @@ class SPANNDiskOptimized:
                 # Compute distances for filtering
                 if self.metric == 'L2':
                     centroid_dists = np.sum((self.centroids[nearest_centroids] - query) ** 2, axis=1)
-                elif self.metric in ('IP', 'Cosine'):
+                elif self.metric in ('IP', 'COSINE', 'Cosine'):
                     centroid_dists = -np.dot(self.centroids[nearest_centroids], query)
         else:
             if self.metric == 'L2':
                 centroid_dists = np.sum((self.centroids - query) ** 2, axis=1)
-            elif self.metric in ('IP', 'Cosine'):
+            elif self.metric in ('IP', 'COSINE', 'Cosine'):
                 centroid_dists = -np.dot(self.centroids, query)
             sorted_idx = np.argsort(centroid_dists)
             nearest_centroids = sorted_idx[:search_internal_result_num]
             centroid_dists = centroid_dists[sorted_idx[:search_internal_result_num]]
         
         t_centroid_end = time_module.time()
-        print(f"  [TIMING] Centroid search: {(t_centroid_end-t_centroid_start)*1000:.2f}ms")
+        # # print(f"  [TIMING] Centroid search: {(t_centroid_end-t_centroid_start)*1000:.2f}ms")
         
         # SPTAG-style distance filtering: limitDist = first_dist * maxDistRatio
         limit_dist = centroid_dists[0] * max_dist_ratio
@@ -735,6 +865,7 @@ class SPANNDiskOptimized:
         nearest_centroids = nearest_centroids[:valid_count]
         
         # Choose loading strategy
+        t_load_start = time_module.time()
         if use_async_pruning:
             # SPTAG-style: Async batch I/O with query-aware pruning
             return self._search_with_async_pruning(
@@ -745,33 +876,59 @@ class SPANNDiskOptimized:
         else:
             # Current: Batch load all postings
             postings = self._load_postings_batch(list(nearest_centroids), max_vectors_per_posting)
+            t_load_end = time_module.time()
+            # print(f"  [TIMING] Load postings: {(t_load_end-t_load_start)*1000:.2f}ms")
             
             # Parallel search postings
+            t_dist_start = time_module.time()
             if self.num_threads > 1:
                 results = self._search_postings_parallel(query, postings, nearest_centroids, max_check)
             else:
                 results = self._search_postings_sequential(query, postings, nearest_centroids, max_check)
             
             all_indices, all_dists = results
+            t_dist_end = time_module.time()
+            # print(f"  [TIMING] Distance compute: {(t_dist_end-t_dist_start)*1000:.2f}ms")
         
         if len(all_indices) == 0:
             return np.array([]), np.array([])
         
         all_indices = np.array(all_indices)
+        all_dists = np.array(all_dists)
         
-        if self.use_rabitq:
+        # Reranking configuration
+        rerank_factor = 10  # Minimal reranking for high recall
+        
+        # Use RaBitQ for filtering, then rerank top candidates
+        t_rerank_start = time_module.time()
+        if self.use_rabitq and rerank_factor > 0:
+            # Get top-N candidates using RaBitQ distances (N = k * rerank_factor)
+            n_candidates = min(k * rerank_factor, len(all_indices))
+            
+            # Sort by RaBitQ distance to get candidates
+            candidate_idx = np.argpartition(all_dists, n_candidates-1)[:n_candidates]
+            candidate_idx = candidate_idx[np.argsort(all_dists[candidate_idx])]
+            
+            # Rerank only these candidates with full precision
+            candidate_indices = all_indices[candidate_idx]
             if self.metric == 'L2':
-                true_dists = np.sum((data[all_indices] - query) ** 2, axis=1)
+                true_dists = np.sum((data[candidate_indices] - query) ** 2, axis=1)
             elif self.metric == 'IP':
-                true_dists = -np.dot(data[all_indices], query)
-            elif self.metric == 'Cosine':
-                true_dists = -np.dot(data[all_indices], query)
+                true_dists = -np.dot(data[candidate_indices], query)
+            elif self.metric == 'COSINE':
+                true_dists = -np.dot(data[candidate_indices], query)
+            
+            # Get final top-k
             top_k_idx = np.argsort(true_dists)[:k]
+            t_rerank_end = time_module.time()
+            # print(f"  [TIMING] Reranking: {(t_rerank_end-t_rerank_start)*1000:.2f}ms")
+            return candidate_indices[top_k_idx], true_dists[top_k_idx]
         else:
-            true_dists = np.array(all_dists)
-            top_k_idx = np.argsort(true_dists)[:k]
-        
-        return all_indices[top_k_idx], true_dists[top_k_idx]
+            # No reranking - use quantized distances directly
+            top_k_idx = np.argsort(all_dists)[:k]
+            t_rerank_end = time_module.time()
+            # print(f"  [TIMING] Reranking: {(t_rerank_end-t_rerank_start)*1000:.2f}ms")
+            return all_indices[top_k_idx], all_dists[top_k_idx]
     
     def search_batch(
         self,
@@ -798,7 +955,7 @@ class SPANNDiskOptimized:
             # Vectorized distance computation
             if self.metric == 'L2':
                 centroid_dists_batch = np.sum((queries[:, None, :] - self.centroids[None, :, :]) ** 2, axis=2)
-            elif self.metric in ('IP', 'Cosine'):
+            elif self.metric in ('IP', 'COSINE', 'Cosine'):
                 centroid_dists_batch = -np.dot(queries, self.centroids.T)
             nearest_centroids_batch = np.argsort(centroid_dists_batch, axis=1)[:, :search_internal_result_num]
             centroid_dists_batch = np.take_along_axis(centroid_dists_batch, nearest_centroids_batch, axis=1)
@@ -832,13 +989,12 @@ class SPANNDiskOptimized:
             search_k = min(max_check, len(posting_ids))
             
             if self.use_rabitq:
-                _, local_indices = rabitq.search(query, codes, k=search_k)
-                local_dists = None
+                local_dists, local_indices = rabitq.search(query, codes, k=search_k)
             else:
                 if self.metric == 'L2':
                     dists = np.sum((codes - query) ** 2, axis=1)
                     local_indices = np.argsort(dists)[:search_k]
-                elif self.metric in ('IP', 'Cosine'):
+                elif self.metric in ('IP', 'COSINE', 'Cosine'):
                     dists = np.dot(codes, query)
                     local_indices = np.argpartition(dists, -search_k)[-search_k:]
                     local_indices = local_indices[np.argsort(-dists[local_indices])]
@@ -850,8 +1006,7 @@ class SPANNDiskOptimized:
                 if global_id not in seen:
                     seen.add(global_id)
                     all_indices.append(global_id)
-                    if local_dists is not None:
-                        all_dists.append(local_dists[idx])
+                    all_dists.append(local_dists[idx])
                     if len(all_indices) >= max_check:
                         break
             
@@ -880,7 +1035,7 @@ class SPANNDiskOptimized:
             if self.metric == 'L2':
                 dists = np.sum((codes - query) ** 2, axis=1)
                 local_indices = np.argsort(dists)[:search_k]
-            elif self.metric in ('IP', 'Cosine'):
+            elif self.metric in ('IP', 'COSINE', 'Cosine'):
                 dists = np.dot(codes, query)
                 local_indices = np.argpartition(dists, -search_k)[-search_k:]
                 local_indices = local_indices[np.argsort(-dists[local_indices])]
@@ -915,7 +1070,7 @@ class SPANNDiskOptimized:
                     if self.metric == 'L2':
                         dists = np.sum((codes - query) ** 2, axis=1)
                         local_indices = np.argsort(dists)[:search_k]
-                    elif self.metric in ('IP', 'Cosine'):
+                    elif self.metric in ('IP', 'COSINE', 'Cosine'):
                         dists = np.dot(codes, query)
                         local_indices = np.argpartition(dists, -search_k)[-search_k:]
                         local_indices = local_indices[np.argsort(-dists[local_indices])]
