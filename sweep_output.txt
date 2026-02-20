@@ -1,7 +1,0 @@
-Auto-calculated posting size: 118 vectors (SPTAG-exact)
-DEBUG: After if/else block
-DEBUG: About to write to log
-DEBUG: About to flush log
-DEBUG: Log flushed
-DEBUG: About to write 'Preparing queries'
-DEBUG: Wrote 'Preparing queries'
