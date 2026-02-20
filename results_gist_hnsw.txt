@@ -1,0 +1,83 @@
+Loading GIST data...
+Loaded: base=(1000000, 960), queries=(1000, 960), GT=(1000, 100)
+
+Building index with HNSW...
+Building optimized SPANN for 1000000 vectors
+  Clustering: HierarchicalClustering
+  Posting limit: 500 vectors
+  Replica count: 8
+[1/5] Clustering...
+  Building BKTree on 1000000 vectors (k=32, leaf=8)...
+  Built tree with 1000001 nodes
+  Selecting heads dynamically (ratio=0.01)...
+    Optimal: select_thresh=100, split_thresh=199, diff=0.09%
+  Selected 10928 centroids (1.09% of data)
+  Created 10928 clusters (1.09% of data)
+[2/5] Assigning vectors to 10928 centroids...
+  Assigning 1000000 vectors with RNG filtering (batched)...
+    Processing 1000000 vectors in 10 batches with RNG filtering...
+    Batch 10/10 done (1000000/1000000 vectors)
+  Truncated 1463066 assignments due to posting limits
+  Posting sizes: min=1, max=500, avg=299.2
+[3/5] Saving posting lists in single file format...
+  Serialized 1000/10928 postings
+  Serialized 2000/10928 postings
+  Serialized 3000/10928 postings
+  Serialized 4000/10928 postings
+  Serialized 5000/10928 postings
+  Serialized 6000/10928 postings
+  Serialized 7000/10928 postings
+  Serialized 8000/10928 postings
+  Serialized 9000/10928 postings
+  Serialized 10000/10928 postings
+  Writing single file...
+  Stored: 11970.97 MB (no compression)
+[4/5] Building HNSW on centroids...
+  Built HNSW with M=16, ef_construction=200
+[5/5] Saving metadata...
+  Saving HNSW centroid index...
+  ✓ HNSW index saved (10928 centroids, M=16)
+✓ Index built and saved to /tmp/gist_index
+DEBUG: About to return from build()
+✓ Index built: 10928 clusters
+
+Testing with 1000 queries
+ Centroids   MaxCheck   Recall@100    Avg(ms)
+--------------------------------------------------
+        32       2048       44.51%      18.97
+        32       4096       57.97%       9.74
+        32       8192       72.12%      12.35
+        32      16384       80.16%      15.88
+        32      32768       80.16%      16.21
+        32      49152       80.16%      14.56
+        32    1000000       80.16%      15.02
+        64       2048       44.74%       9.59
+        64       4096       58.38%       9.45
+        64       8192       72.82%      15.26
+        64      16384       84.68%      26.27
+        64      32768       89.53%      35.98
+        64      49152       89.53%      35.10
+        64    1000000       89.53%      37.31
+       128       2048       44.78%      15.95
+       128       4096       58.50%      14.01
+       128       8192       72.94%      19.75
+       128      16384       84.98%      31.11
+       128      32768       92.67%      60.76
+       128      49152       94.83%      68.81
+       128    1000000       94.84%      72.55
+       256       2048       44.79%      26.72
+       256       4096       58.53%      30.31
+       256       8192       72.99%      35.84
+       256      16384       85.08%      43.53
+       256      32768       92.86%      73.27
+       256      49152       95.53%     103.15
+       256    1000000       97.31%     140.07
+       512       2048       44.79%      55.46
+       512       4096       58.53%      59.82
+       512       8192       72.99%      59.77
+       512      16384       85.12%      77.02
+       512      32768       92.89%     111.08
+       512      49152       95.58%     124.49
+       512    1000000       98.37%     272.15
+
+Done!
